@@ -1,0 +1,276 @@
+@chapter{ch-vars} Variables and Storage
+@index variables
+A variable is a named piece of storage with a type. ASH has three kinds of variables: *local variables*, declared inside a function; *parameters*, declared in a function header ([[ch-funcs]]); and *global variables*, declared at the top level of a file. This chapter describes how each kind is declared, initialized and accessed, and where the compiler stores it.
+
+@section{var-local} Local Variables
+@subsection Declaration
+A local variable is declared with a type followed by a name and an optional initializer:
+
+@code text nocheck
+type name [= expression] ;
+@end
+
+The type may be any type of [[ch-types]], including pointer types (`uint8* p`), array types (`int64[] v`, `int64[8] buf`, `int64 buf[8]`) and structure types (`Persona p`). Only one variable is declared per statement.
+
+@example run ir title="Declaring and initializing local variables"
+@Entry
+pub func main(): int64 {
+    int64 count = 10;
+    uint8 small = 200;
+    int64 total = count * 2 + small;
+    string name = "ASH";
+    int64 zero;                 // no initializer: starts at 0
+    printf("%s %d %d\n", name, total, zero);
+    return 0;
+}
+@end
+
+@subsection{var-zero} Default initialization
+A local variable declared without an initializer starts with the value 0. Arrays declared with a size are allocated zero-filled. This is a guarantee of ASH (unlike C, where an uninitialized local has an indeterminate value): the compiler emits an explicit `mov[0]` for scalars, and arrays are obtained from a zeroing allocator.
+
+@subsection{var-scope} Scope and lifetime
+@index scope
+A local variable can be used from the point of its declaration to the end of the function, **including after the end of the block in which it was declared**: in ASH 1.0 the scope of every local is the whole remaining body of the function, not the enclosing block. The following program is valid and prints 5:
+
+@example run title="Locals are visible until the end of the function"
+@Entry
+pub func main(): int64 {
+    int64 x = 1;
+    if (x == 1) {
+        int64 y = 5;
+    }
+    printf("%d\n", y);          // y is still visible here
+    return 0;
+}
+@end
+
+A loop variable declared in the header of a `for` statement follows the same rule. Two `for` loops in the same function may both declare `int64 i`; the second declaration simply re-initializes the same variable.
+
+@warning
+Declaring the same name twice in one function with the same type re-initializes the variable instead of creating a second one. Declaring it again with a different type is an error at code generation time. Write distinct names for distinct variables, and rely on block structure only for readability.
+@end
+
+@subsection{var-assign} Assignment
+@index assignment
+Assignment is a statement, not an expression: `x = e;` stores the value of `e` in `x`. It cannot appear inside another expression, and `a = b = c` is not valid. The compound forms `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=` and `^=` are rewritten as described in [[lex-compound]]. The increment and decrement statements `x++`, `++x`, `x--` and `--x` add or subtract 1.
+
+Assignment targets can be:
+
+@table widths=34,66 title="Assignment targets" label=tab-assign-targets
+Target | Example
+Local variable or parameter | `total = total + 1;`
+Global variable declared `static` | `counter = counter + 1;`
+Array element | `v[i] = 0;` `m[i][j] = 1;`
+Memory through a pointer | `*p = 42;` `*(int64*)addr = 0;`
+Structure field | `p.age = 14;` `ptr->age = 15;` `a->b->c = 0;`
+Crack invocation | `f.config = 1, "text";` ([[ch-cracks]])
+@end
+
+@section{var-where} Where Locals Live
+@index register allocation
+The x86-64 code generator keeps scalar locals and parameters in registers whenever possible, and uses the stack frame for the rest. The choice depends on whether the function calls other functions:
+
+@table widths=30,70 title="Storage of locals on the 64-bit target" label=tab-local-storage
+Function kind | Storage
+Leaf function (calls nothing) | The caller-saved registers `r8`–`r11` first; no registers need to be saved, and the function often needs no frame at all.
+Function that makes calls | The callee-saved registers `r12`–`r15` first (they survive calls), then 8-byte slots in the stack frame addressed through `rbp`. The prologue saves exactly the callee-saved registers the function uses.
+Variables used in `asm` blocks | A callee-saved register or a stack slot, so that the operand substituted into the assembly is stable ([[asm-vars]]).
+Temporaries | `rax`, `rcx` and `rdx` while an expression is computed; named temporaries (`__tmp`*N*) get registers or slots like ordinary locals.
+@end
+
+The following function has more locals than there are callee-saved registers. The first four live in `r12`–`r15`, and the others in stack slots below the saved registers:
+
+@example run asm=main asmlines=40 title="Registers first, then stack slots" label=ex-spill
+@Entry
+pub func main(): int64 {
+    int64 a = 1; int64 b = 2; int64 c = 3; int64 d = 4;
+    int64 e = 5; int64 f = 6; int64 g = 7;
+    printf("%d\n", a + b + c + d + e + f + g);
+    return 0;
+}
+@end
+
+On the 32-bit and 16-bit targets every local has a slot in the stack frame, addressed as `[ebp-`*n*`]` or `[bp-`*n*`]` ([[cg-32]]).
+
+@section{var-volatile} Volatile Variables
+@index volatile
+The keyword `volatile` before a declaration asks the compiler to keep the variable even if it appears unused. Without it, a local `string` variable whose value is never read is removed together with its literal. `volatile` is useful when a variable is only read by assembly code or by a debugger.
+
+@code ash frag
+volatile string marker = "BUILD-2026-10";
+volatile int64 debug_level = 3;
+@end
+
+`volatile` also applies to assembly blocks (`volatile asm { ... }`, `asm volatile("...")`), where it marks the block as having side effects ([[ch-asm]]).
+
+@section{var-global} Global Variables
+@index global variable; general; ungeneral; static
+A variable declared outside every function and class is global. Its declaration must say who can see it:
+
+@code text nocheck
+(general | ungeneral) [static] type name [= constant-expression]
+@end
+
+@table widths=22,78 title="Global variable qualifiers" label=tab-global-qual
+Qualifier | Meaning
+`general` | The variable is a public symbol with its own name: C code and other object files can refer to it (`extern unsigned long counter;` in C).
+`ungeneral` | The variable is private to the program: its symbol is renamed `__g_<name>` and is local to the object file.
+`static` | The variable can be modified at run time. **Without `static` a global is a constant**: assigning to it is a compile-time error.
+`const` | Accepted for readability; a global is constant unless it is `static`.
+@end
+
+The semicolon after a global declaration is optional and usually omitted. The initializer must be a constant expression: literals combined with the operators `+ - * / % << >> & | ^ ~` and parentheses, evaluated at compile time with arbitrary precision and then checked against the range of the type. A global without initializer is 0.
+
+@example run ir show=src,out,ir title="Global variables" label=ex-globals
+general static int64 counter = 3 * 4 + (1 << 4)     // 28
+ungeneral static uint8 flags
+general uint16 MAGIC = 0xBEEF                        // constant
+ungeneral int32 LIMIT = -100                         // constant, private
+
+func bump(): void {
+    counter++;
+    flags = flags | 2;
+}
+
+@Entry
+pub func main(): int64 {
+    bump();
+    bump();
+    printf("%d %d %x %d\n", counter, flags, MAGIC, LIMIT);
+    return 0;
+}
+@end
+
+The ASHIR shows each global as a `.gvar` entry with its symbol, size in bytes and initial value; the private ones carry the `__g_` prefix.
+
+@example fail title="Assigning to a constant global" translate="error: the global 'LIMIT' is not static (it is a constant): declare it 'static uint32 LIMIT' to be able to change it\n1 error generated."
+general uint32 LIMIT = 1000
+
+@Entry
+pub func main(): int64 {
+    LIMIT = 5;
+    return 0;
+}
+@end
+
+@example fail title="A global must say who can see it"
+uint64 total = 0
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+@subsection{var-global-access} How globals are accessed
+The front end rewrites every use of a global `g` of type `T` into a typed memory access through its address: reading `g` becomes `*(T*)&g` and `g = v` becomes `*(T*)&g = (T)v`. `g++` and `g--` become `g = g + 1` and `g = g - 1`. In machine code a global is therefore loaded and stored with RIP-relative addressing (`[rip+disp32]`) on x86-64, or with an absolute address on 32-bit and flat targets.
+
+@subsection{var-global-addr} The address of a global
+`&g` is the address of the global's storage. It can be passed to C, stored in a pointer and used to read and write the global indirectly:
+
+@example run title="Taking the address of a global"
+general static uint64 total = 100
+
+@Entry
+pub func main(): int64 {
+    uint64* p = &total;
+    *p = *p + 1;
+    printf("total=%llu\n", total);
+    return 0;
+}
+@end
+
+@subsection{var-global-arrays} Global arrays
+@index global array
+A global may be an array with an initializer list, or a sized array that starts zero-filled:
+
+@code text nocheck
+(general | ungeneral) [static] type[] name = { constant, ... }
+(general | ungeneral) [static] type[N] name
+(general | ungeneral) char[] name = """text"""
+@end
+
+Global arrays have the same layout as local arrays ([[arr-layout]]): the symbol points at the first element and a header holding the length precedes it, so `#name`, loops and bounds checks work exactly as for locals. Element values of a global array can be modified even if the array itself is not `static`.
+
+@example run title="Global arrays" label=ex-global-arrays
+general uint32[] table = {10, 20, 30, 40}
+ungeneral static uint8[8] buffer
+general char[] poem = """line one
+line two"""
+
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    for (int64 i = 0; i < #table; i++) {
+        total = total + table[i];
+    }
+    buffer[3] = 7;
+    printf("total=%d len=%d buffer[3]=%d\n%s\n", total, #table, buffer[3], poem);
+    return 0;
+}
+@end
+
+@subsection{var-runnable} Runnable arrays
+@index runnable
+`runnable` declares a global array whose contents are *machine code*: the array lives in memory that is both writable and executable, its elements can be modified at run time like any other array, and the array can be called like a function. Arguments are passed in the registers of the calling convention (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` on x86-64) and the result is taken from `rax`.
+
+@example run title="A runnable array patched at run time" label=ex-runnable
+runnable byte[] give = {0xB8, 0, 0, 0, 0, 0xC3};      // mov eax, imm32 ; ret
+runnable byte[] add2 = {0x48, 0x8D, 0x04, 0x37, 0xC3}; // lea rax, [rdi+rsi] ; ret
+
+@Entry
+pub func main(): int64 {
+    give[1] = 42;                 // patch the immediate operand
+    int64 a = give();
+    int64 b = add2(5, 6);
+    int64 n = 1234;
+    give[1] = n & 255;            // patch it again from a variable
+    give[2] = n >> 8;
+    int64 c = give();
+    printf("give=%d add2=%d patched=%d\n", a, b, c);
+    return 0;
+}
+@end
+
+Runnable arrays are the simplest way to experiment with self-modifying code, just-in-time code generation and instruction encodings. [[asm-runnable]] shows more uses.
+
+@subsection{var-section} Placing a global in a section
+`@section(".name", "flags")` before a global puts its data in its own ELF section, which a linker script can then place at a fixed address (a multiboot header, a table in ROM, a boot signature). See [[ann-section]].
+
+@section{var-c} Sharing Variables with C
+A `general` global is an ordinary data symbol. C code declares it with `extern` and the matching C type, and reads and writes it directly:
+
+@code ash file=shared.ash
+general static uint64 counter = 100
+general uint32 VERSION = 3
+
+pub func bump(): void {
+    counter = counter + 1;
+}
+@end
+
+@code c file=main.c
+#include <stdio.h>
+extern unsigned long counter;
+extern unsigned int VERSION;
+void bump(void);
+
+int main(void) {
+    bump();
+    printf("counter=%lu VERSION=%u\n", counter, VERSION);
+    counter = 500;
+    bump();
+    printf("after C wrote it: %lu\n", counter);
+    return 0;
+}
+@end
+
+@session
+$ ashc shared.ash --elf -s
+$ gcc -no-pie -Wl,--no-warn-rwx-segments main.c out/shared.o -o demo
+$ ./demo
+@end
+
+@note
+Because code and writable data share the `.ashtext` section, the GNU linker warns that the program has a segment with read, write and execute permissions. The warning is harmless for ASH programs and can be silenced with `-Wl,--no-warn-rwx-segments`.
+@end

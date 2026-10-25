@@ -1,0 +1,307 @@
+@chapter{ch-shasm} The shasm Assembler
+@index shasm; assembler
+`shasm` is the x86 assembler of The Ashley Project. It is embedded in `ashc`, where it encodes every `asm` block, and it is also available as a stand-alone tool that assembles complete source files into flat binaries, Intel HEX files and ELF or COFF objects. Its syntax follows the conventions of NASM, so most NASM sources assemble unchanged. This chapter is a complete guide to the stand-alone assembler: command line, source syntax, expressions, directives, the preprocessor, output formats and listings.
+
+@section{shasm-run} Running shasm
+`shasm` 1.2.0 is part of the compiler's jar. It is started with the Java runtime:
+
+@code sh
+java -cp out/ashc-1.0.0.jar shasm.Main [options] file.asm
+@end
+
+A two-line wrapper script makes it available as a command:
+
+@code sh
+#!/bin/sh
+# save as ~/.local/bin/shasm and make it executable
+exec java -cp "$HOME/.local/lib/ashc-1.0.0.jar" shasm.Main "$@"
+@end
+
+All the sessions of this chapter use such a wrapper.
+
+@session
+$ shasm --lang en --help
+@end
+
+@table widths=24,76 title="Command line options of shasm" label=tab-shasm-opts
+Option | Meaning
+`-o` *file* | Output file. Default: the input name with `.bin`, `.hex`, `.o` or `.obj`.
+`-f` *fmt* | Output format: `bin` (default), `hex`, `elf32`, `elf64`, `win32`, `win64`.
+`-l` *file* | Write a listing: line number, address, encoded bytes and source of every line.
+`-I` *dir* | Add a directory to the search path of `%include` and `incbin` (repeatable).
+`-D` *sym*[`=`*val*] | Define a preprocessor symbol, as `%define sym val` (the value defaults to 1).
+`-b` *16|32|64* | Initial `bits` mode. Default: 16 for `bin` and `hex`, 32 or 64 according to the object format.
+`-w` | Treat warnings as errors.
+`--lang` *xx* | Language of messages: `en`, `es`, `de`, `it`, `pt`. The default is taken from the environment.
+`--po` *file* | Load additional message translations from a gettext `.po` file.
+`-v`, `--version` | Print the version.
+`-h`, `--help` | Print the help text.
+@end
+
+@section{shasm-syntax} Source Syntax
+A source line has the general form:
+
+@code text nocheck
+[label:]  [prefix]  mnemonic  [operand [, operand ...]]   [; comment]
+@end
+
+- **Labels** end with a colon. A label whose name begins with a dot (`.loop`) is *local*: it belongs to the most recent non-local label, so the same local name can be reused under different functions. A label without a colon is accepted when it is followed by a data directive (`msg db "x"`).
+- **Mnemonics** and **register names** are case-insensitive. Labels and symbols are case-sensitive.
+- **Operands** are registers, immediate expressions, or memory references in brackets. A size keyword (`byte`, `word`, `dword`, `qword`, `tword`, `oword`) gives the size of a memory operand when the other operand does not; `rel` and `abs` select RIP-relative or absolute addressing.
+- **Comments** begin with `;`. Lines beginning with `;@` and blocks between `;*` and `*;` are documentation comments (*AshDoc*), recorded by the assembler and otherwise ignored.
+- **Prefixes** `lock`, `rep`, `repe`, `repne`, `repz`, `repnz`, `xacquire`, `xrelease`, `a16`/`a32`/`a64`, `o16`/`o32`/`o64` may precede an instruction.
+- A line ending with `\` continues on the next line.
+
+@section{shasm-numbers} Numbers, Characters and Strings
+@table widths=36,64 title="Constant forms" label=tab-shasm-numbers
+Form | Examples
+Decimal | `42`, `0d42`, `42d`, `1_000_000` (underscores are ignored)
+Hexadecimal | `0x2A`, `0h2A`, `2Ah` (must start with a digit: `0FFh`)
+Binary | `0b101010`, `0y101010`, `101010b`, `101010y`
+Octal | `0o52`, `0q52`, `52o`, `52q`
+Floating point | `1.5`, `3.0e10` (in `dd`, `dq`, `dt` data)
+Character constant | `'A'` (65), `'ab'` (multi-character, little-endian)
+String | `"text"`, `'text'`, `` `text with \n escapes` ``
+@end
+
+@section{shasm-expr} Expressions
+Expressions are evaluated with 64-bit integers. Two special symbols are available: `$` is the address of the beginning of the current line, and `$$` the address of the beginning of the current section, so `$ - $$` is the current offset in the section.
+
+@table widths=34,66 title="Expression operators, from lowest to highest precedence" label=tab-shasm-ops
+Operators | Meaning
+`||`, `^^`, `&&` | Logical or, xor, and (result 0 or 1)
+`==` `!=` `<>` `<` `<=` `>` `>=` | Comparisons (result 0 or 1)
+`|` | Bitwise or
+`^` | Bitwise exclusive or
+`&` | Bitwise and
+`<<` `>>` `<<<` `>>>` | Shifts: `>>` is logical, `>>>` arithmetic
+`+` `-` | Addition, subtraction
+`*` `/` `//` `%` `%%` | Multiplication; unsigned and signed division; unsigned and signed remainder
+unary `-` `+` `~` `!` | Negation, identity, complement, logical not
+@end
+
+@asmexample bits=32 title="Expressions, $ and $$" label=ex-shasm-expr
+bits 32
+start:
+    mov eax, (1 << 4) | 3          ; 19
+    mov ebx, -7 // 2               ; signed division: -3
+    mov ecx, 0x10 >> 1             ; 8
+    mov edx, 101b + 17q + 0Ah      ; 5 + 15 + 10
+    mov esi, end - start           ; size of the code (forward reference)
+    mov edi, $ - $$                ; offset of this instruction
+end:
+@end
+
+@section{shasm-data} Data Directives
+@table widths=30,70 title="Data definition and reservation" label=tab-shasm-data
+Directive | Meaning
+`db`, `dw`, `dd`, `dq` | Define bytes, words (2), doublewords (4), quadwords (8). Operands are expressions, strings (in `db`, one byte per character) or floating-point constants (`dd` single, `dq` double).
+`dt`, `do`, `dy`, `dz` | Define 10, 16, 32 and 64-byte items.
+`resb`, `resw`, `resd`, `resq`, `rest`, `reso`, `resy`, `resz` | Reserve uninitialized space (zeros in flat outputs, no file space in `.bss`).
+`times` *n* *line* | Repeat a line *n* times; *n* may depend on `$` and `$$`.
+`incbin "file"[, skip[, length]]` | Include the bytes of a file.
+*name* `equ` *expr* | Define a constant symbol.
+`?` | In a data list, an uninitialized item (zero).
+@end
+
+@asmexample bits=32 title="Data definitions" label=ex-shasm-data
+bits 32
+table:  dw 1, 2, 3
+        align 4
+text:   db "ASH", 0
+pi:     dd 3.14159
+big:    dq 0x1122334455667788
+pad:    times 4 db 0xCC
+count   equ ($ - table)
+size:   dd count
+@end
+
+@section{shasm-directives} Assembler Directives
+@table widths=32,68 title="Assembler directives" label=tab-shasm-directives
+Directive | Meaning
+`bits 16|32|64`, `use16`, `use32`, `use64` | Select the processor mode for the following lines. May be written `[bits 32]`.
+`org` *address* | Origin of a flat binary: the address at which the first byte will be loaded. Must appear before any code.
+`section` *name* [`align=`*n*] [`progbits`|`nobits`], `segment` | Switch to (or create) a section. In flat output, sections follow one another in order of appearance.
+`global` *sym* | Export a symbol from an object file.
+`extern` *sym* | Declare a symbol defined in another object; references become relocations.
+`default rel` / `default abs` | In 64-bit mode, make memory references to symbols RIP-relative (recommended) or absolute.
+`align` *n* [, *fill*] | Pad to a multiple of *n* (a power of two) with `nop` in code, or with the fill value.
+`alignb` *n* | Pad with zeros (or reserve space in `nobits` sections).
+`fill` *size* [, *value*] / `fill` *value* `-->` *size* | Pad the current section with *value* until it is *size* bytes long.
+`bootsig` | Emit the boot signature bytes `55 AA`.
+`cpu`, `float`, `common`, `static`, `warning`, `map`, `list`, `required`, `sectalign`, `group`, `export`, `import` | Accepted for compatibility; no effect.
+@end
+
+@section{shasm-preproc} The Preprocessor
+@index %macro; %define; %rep
+The preprocessor runs before assembly and works line by line. Its directives start with `%`:
+
+@table widths=36,64 title="Preprocessor directives" label=tab-shasm-pp
+Directive | Meaning
+`%define` *name*[`(`*params*`)`] *body* | Single-line macro, optionally with parameters. `%idefine` is case-insensitive; `%xdefine` / `%ixdefine` expand the body at definition time.
+`%undef` *name* | Remove a definition.
+`%assign` *name* *expr* / `%iassign` | Define *name* as the numeric value of *expr*.
+`%defstr` *name* *text* | Define *name* as a string.
+`%strlen` *name* *string* | Define *name* as the length of the string.
+`%macro` *name* *n*[`-`*m*][`+`] ... `%endmacro` | Multi-line macro with *n* to *m* parameters (`+`: the last one takes the rest of the line). Inside, `%1`, `%2` ... are the arguments, `%0` their number, and `%%label` a label unique to each expansion. `%imacro` is case-insensitive.
+`%rep` *n* ... `%endrep` | Repeat a block *n* times.
+`%if` *expr*, `%ifn`, `%elif`, `%elifn`, `%else`, `%endif` | Conditional assembly on an expression.
+`%ifdef`, `%ifndef`, `%elifdef`, `%elifndef` | On whether a single-line macro is defined.
+`%ifmacro`, `%ifnmacro` | On whether a multi-line macro is defined.
+`%ifidn`, `%ifidni`, `%ifnidn`, `%elifidn` | On whether two texts are identical (`i`: case-insensitive).
+`%ifid`, `%ifnum`, `%ifstr`, `%ifempty`, `%elifnum`, `%elifstr` | On the kind of a token.
+`%include "file"` | Insert another source file (searched in the directory of the current file and the `-I` directories).
+`%error`, `%fatal`, `%warning` *text* | Report a message.
+`%line`, `%pragma`, `%clear`, `%null` | Accepted for compatibility.
+@end
+
+@asmexample bits=16 title="Macros, repetition and conditional assembly" label=ex-shasm-macro
+bits 16
+org 0x100
+%define COLOR 0x1F
+%assign COUNT 3
+
+%macro PUTC 1                ; print one character through BIOS
+    mov al, %1
+    mov ah, 0x0E
+    int 0x10
+%endmacro
+
+%macro DELAY 0
+    mov cx, 0xFFFF
+%%wait:                      ; %% makes the label unique per expansion
+    loop %%wait
+%endmacro
+
+start:
+    PUTC 'O'
+    PUTC 'K'
+    DELAY
+    DELAY
+%rep COUNT
+    nop
+%endrep
+%if COUNT > 2
+    mov bl, COLOR
+%endif
+    ret
+@end
+
+@subsection Metadata directives
+The directives `%definesdk`, `%author`, `%license`, `%docs`, `%mallionic`, `%comment`, `%link`, `%dev` and `%team` attach descriptive metadata to a source file. Their value may be a quoted string or a triple-quoted multi-line string. They generate no bytes; the assembler records them together with the AshDoc comments, for tools that document assembly sources.
+
+@code asm nocheck
+%author  "Mallionic Inc."
+%license "GPL-3.0-or-later"
+%comment """Boot sector of the demo image.
+Prints a banner and halts."""
+;@brief  entry point, called by the BIOS at 0000:7C00
+@end
+
+@section{shasm-formats} Output Formats
+@table widths=16,84 title="Output formats of shasm" label=tab-shasm-formats
+Format | Output
+`bin` | A flat binary. Sections are concatenated in order; addresses start at `org`. Default mode: 16 bits.
+`hex` | The same image in Intel HEX format, for EPROM programmers and microcontroller loaders.
+`elf32` | ELF32 relocatable object for i386, with `.text`, `.data`, `.bss` and user sections, a symbol table with `global` and `extern` symbols, and `R_386_*` relocations.
+`elf64` | ELF64 relocatable object for x86-64 with `R_X86_64_*` relocations.
+`win32` | COFF object for i386 Windows.
+`win64` | COFF object for x64 Windows.
+@end
+
+@section{shasm-elf} A Linux Program in Assembly
+The following program uses the 64-bit Linux system call interface directly. It is assembled as an ELF64 object, linked with `ld` and executed:
+
+@asmexample fmt=elf64 run title="Hello world for Linux x86-64" label=ex-shasm-hello
+; hello.asm - Linux x86-64, no C library
+bits 64
+default rel
+
+section .data
+msg:    db "Hello from shasm!", 10
+len     equ $ - msg
+
+section .text
+global _start
+_start:
+    mov eax, 1          ; sys_write
+    mov edi, 1          ; fd 1 = stdout
+    lea rsi, [msg]
+    mov edx, len
+    syscall
+    mov eax, 60         ; sys_exit
+    xor edi, edi        ; status 0
+    syscall
+@end
+
+@asmexample fmt=elf32 run title="The same program for i386 Linux" label=ex-shasm-hello32
+bits 32
+
+section .data
+msg:    db "Hello from 32-bit shasm!", 10
+len     equ $ - msg
+
+section .text
+global _start
+_start:
+    mov eax, 4          ; sys_write
+    mov ebx, 1
+    mov ecx, msg
+    mov edx, len
+    int 0x80
+    mov eax, 1          ; sys_exit
+    mov ebx, 3
+    int 0x80
+@end
+
+@section{shasm-boot} A Boot Sector
+@index boot sector
+A BIOS boot sector is 512 bytes long, is loaded at address `0x7C00` and must end with the signature `55 AA`. The `times` directive pads the code to 510 bytes using `$` and `$$`, and `dw 0xAA55` (or `bootsig`) adds the signature:
+
+@asmexample bits=16 hexdump hexskip=0x1e0 show=src,listing,hex listlines=30 title="A complete boot sector" label=ex-shasm-boot
+; boot.asm - prints "ASH" with BIOS teletype output and halts
+bits 16
+org 0x7C00
+
+start:
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov ss, ax
+    mov sp, 0x7C00
+    sti
+    mov si, banner
+.next:
+    lodsb                   ; al = [si], si++
+    test al, al
+    jz .halt
+    mov ah, 0x0E            ; BIOS teletype
+    mov bx, 0x0007
+    int 0x10
+    jmp .next
+.halt:
+    hlt
+    jmp .halt
+
+banner: db "ASH", 13, 10, 0
+
+times 510 - ($ - $$) db 0   ; pad to 510 bytes
+dw 0xAA55                   ; boot signature
+@end
+
+The image can be written to the first sector of a disk image (`dd if=boot.bin of=disk.img conv=notrunc`) and started in an emulator such as QEMU (`qemu-system-x86_64 -drive format=raw,file=disk.img`).
+
+@section{shasm-listing} Listings
+The listing written with `-l` has one line per source line that produces bytes: the source line number, the address (relative to `org` or to the section), the encoded bytes in hexadecimal (long sequences are cut and marked with `-`), and the source text after macro expansion. Lines produced by a macro or a `%rep` carry the line number of the macro body. Listings are the most reliable way to check what the assembler produced, and the source of all the encodings shown in this manual.
+
+@section{shasm-errors} Diagnostics
+Errors are reported as `file:line: error: message`; the assembler stops with exit status 1 and writes no output file. Warnings are printed as `file:line: warning: message` and do not stop the assembly unless `-w` is given.
+
+@asmexample fail title="An error message" label=ex-shasm-err
+bits 64
+    mov rax, 1
+    mov rax, [rbx + rcx*3]       ; scale must be 1, 2, 4 or 8
+@end
+
+@section{shasm-inline} shasm Inside ashc
+When `ashc` assembles an `asm` block it runs `shasm` in flat mode with the current `bits` and origin, after replacing ASH variable names with their locations ([[asm-howto]]). Everything described in this chapter is therefore available in `asm` blocks, except that each block is assembled separately: labels cannot be shared between blocks, and directives that change sections or the origin have no useful meaning inside a function.

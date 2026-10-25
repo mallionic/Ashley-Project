@@ -1,0 +1,253 @@
+@chapter{ch-cli} The ashc Command Line
+@index ashc; command line
+This chapter is the reference of the `ashc` command. It describes the general syntax, every output mode, every option, how output file names are chosen and how diagnostics are printed. Each option is illustrated with a session recorded while this manual was built.
+
+@file hello.ash
+@Entry
+pub func main(): int64 {
+    printf("Hello, world!\n");
+    return 0;
+}
+@end
+
+@section{cli-syntax} Synopsis
+@code text nocheck
+ashc <input> [output] [options]
+@end
+
+*input* is the source file. Its extension selects the starting point of the pipeline:
+
+@table widths=20,80 title="Input files accepted by ashc"
+Extension | Treatment
+`.ash` | ASH source. The full pipeline runs: directives, lexer, macros, parser, rewriting passes, ASHIR generation and (if an output mode asks for it) code generation.
+`.ashir` | ASHIR text. The front end is skipped; the file is parsed as ASHIR and compiled to the requested output. This lets you edit the intermediate representation by hand, or generate it with another tool.
+@end
+
+An optional second positional argument is the output file (equivalent to `-o`). Options may appear before or after the file names. Options are case-sensitive.
+
+Here is the help text printed by `ashc --help`:
+
+@session
+$ ashc --help
+@end
+
+@section{cli-modes} Output Modes
+@index output mode
+Exactly one output mode is active for a run. Without a mode option the compiler writes ASHIR text.
+
+@table widths=24,22,54 title="Output modes" label=tab-modes
+Option | Output | Description
+(none) | `<name>.ashir` | ASH is translated to ASHIR text, written next to the source. No machine code is generated.
+`--compile` | `out/<name>.bin` | ASHIR is compiled to a flat binary: raw machine code followed by data, no header, no relocations. Addresses are absolute, computed from `@originoffs`. Used for 16-bit code, boot sectors and images loaded by your own loader.
+`--elf` | `out/<name>.o` | ELF relocatable object. 64-bit (`ELF64`, x86-64) by default; 32-bit (`ELF32`, i386) when the program uses `@bits(32)` or `--bits 32`.
+`--win` | `out/<name>.obj` | COFF relocatable object for Windows. AMD64 by default, i386 with `@bits(32)`. Calls to `extern` functions use the Microsoft x64 convention (`RCX`, `RDX`, `R8`, `R9`, 32 bytes of shadow space).
+`--exe` | `out/<name>` | A complete 32-bit Linux executable: an ELF32 header and one loadable segment that wraps a flat image. The image must be linked at the address given by `@originoffs` (normally `0x08048000`).
+`-f`, `--format` *fmt* | | Selects the mode by name: `elf`; `coff` (also `win`, `obj`); `bin` (also `flat`, `raw`); `exe` (also `elf32`); `ashir` (also `ir`).
+@end
+
+`--elf` and `--win` are mutually exclusive. `--bits` alone also turns code generation on (a flat binary) unless `--elf` or `--win` is given.
+
+@session title="The same program in several output modes"
+$ ashc hello.ash -s
+$ ashc hello.ash --elf -s
+$ ashc hello.ash --win -s
+$ ls -l hello.ashir out/
+@end
+
+@note
+A flat binary has no symbol table, so it cannot refer to functions of another library. The call to `printf` in `hello.ash` therefore makes `ashc hello.ash --compile` stop with an error (a call to the external function `printf` needs an object file format); `--elf` and `--win` succeed because the object file records an *external* reference that the linker resolves later. Flat images use only their own code, the built-in helpers, and the operating system or firmware they run on.
+@end
+
+@section{cli-options} Options Reference
+@subsection{cli-output} Output location: -o, --outdir
+@index -o; --outdir
+`-o` *path* sets the output. If *path* ends with `/` (or `\` on Windows) or names an existing directory, the output file keeps its default name and is written into that directory. Otherwise *path* is the output file name itself. `--outdir` *dir* replaces the default `out/` directory while keeping the default file name.
+
+@session
+$ ashc hello.ash --elf -o build/ -s
+$ ashc hello.ash --elf -o hello64.o -s
+$ ashc hello.ash --elf --outdir objects -s
+$ ls build objects hello64.o
+@end
+
+When neither option is given, binary outputs go into a directory named `out` next to the *source file* (not the current directory), which is created if necessary.
+
+@subsection --stdout
+Prints the result on standard output instead of writing a file. It is mainly useful with ASHIR output, to pipe the intermediate representation into another tool:
+
+@code ash file=square.ash
+func square(int64 x): int64 {
+    return x * x;
+}
+
+@Entry
+pub func main(): int64 {
+    return square(3) * square(2);
+}
+@end
+
+@session
+$ ashc square.ash --stdout -s | grep "func "
+$ ashc square.ash --stdout -s | grep -c "mul\["
+@end
+@subsection --bits *n*
+@index --bits
+Forces the target width to 16, 32 or 64 bits, overriding `@bits(...)` in the source. `--bits 32 --elf` produces an i386 ELF object, `--bits 32 --win` an i386 COFF object, and `--bits 16` (or 32) alone a flat binary. Inside the source the width is visible to the preprocessor as `ASH_BITS` ([[pp-symbols]]).
+
+@subsection --no-libc
+@index --no-libc
+Promises that the program will not be linked with the C library. The compiler then:
+
+- replaces the external `calloc`, `free` and `exit` used by arrays, strings and `exit(...)` with built-in implementations based on the Linux system calls `mmap` (9) and `exit_group` (231);
+- defines the preprocessor flag `ASH_NO_LIBC` to 1 (it is 0 otherwise);
+- still lets you declare and call `extern` functions, which you must then provide yourself (for example in another object file).
+
+The same effect can be requested from the source with `@nolibc` ([[ann-nolibc]]). In 32-bit flat mode there is never a C library: only the built-in `calloc`, `free` and `exit` are available.
+
+@subsection -e, --epilogue
+@index --epilogue; stack frame
+Always emits a full stack frame (`push rbp` / `mov rbp, rsp` ... `leave`) in every function. By default (`@beautycode(true)`), leaf functions that need no stack space are emitted without a frame. A frame in every function makes stack traces in debuggers more reliable. The option wins over `@beautycode` in the source.
+
+@example asm show=src,asm title="Default output: a leaf function without a frame"
+func add(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    return add(40, 2);
+}
+@end
+
+@example asm=add flags=-e show=asm title="The same function compiled with -e"
+func add(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    return add(40, 2);
+}
+@end
+
+@subsection -s, --silent and --msg
+@index --msg
+By default a successful build prints one line beginning with `[BUILD SUCCESS]`. `-s` suppresses it (errors and warnings are still printed). `--msg` *format* replaces it with your own text, where `{file}`, `{size}` and `{mode}` are substituted:
+
+@session
+$ ashc hello.ash --elf
+$ ashc hello.ash --elf --msg "ok: {file} is a {mode} of {size} bytes"
+$ ashc hello.ash --elf -s
+@end
+
+@subsection --tokens
+@index --tokens; lexer
+Prints the token stream produced by the lexer and stops. Each line shows the index of the token, its type, its text and its position (`line:column`). Use it to understand how the lexer splits an unusual construct.
+
+@code ash file=tiny.ash
+@Entry
+pub func main(): int64 {
+    return 0x2A;   // 42
+}
+@end
+
+@session
+$ ashc tiny.ash --tokens
+@end
+@subsection --debug
+Prints the time spent in each stage of the compiler (reading, lexing, ASHIR generation, ASHIR parsing, code generation, object writing) and internal tracing information about symbols and relocations. The output is meant for compiler developers and changes between versions.
+
+@subsection --trace
+@index internal compiler error
+When the compiler itself fails (an *internal compiler error*, printed in red), it normally prints a one-line description. `--trace` adds the Java stack trace, which is the most useful information to attach to a bug report.
+
+@subsection --list-nlib
+Lists the libraries embedded in the compiler that can be imported with `import <name>;`.
+
+@subsection -v, --version; --license; -h, --help
+Print the version and copyright notice, the license summary, and the help text respectively, then exit.
+
+@session
+$ ashc --license
+@end
+
+@section{cli-names} Output File Names
+@table widths=30,70 title="How the output path is chosen"
+Situation | Result
+ASHIR mode, no `-o` | `<source directory>/<name>.ashir`
+Binary mode, no `-o`, no `--outdir` | `<source directory>/out/<name>.<ext>` where *ext* is `o`, `obj`, `bin` or empty (`--exe`).
+`--outdir D` | `D/<name>.<ext>`
+`-o D/` or `-o D` with `D` an existing directory | `D/<name>.<ext>`
+`-o F` | `F` exactly (no extension is added).
+`--stdout` | Nothing is written; the result goes to standard output.
+@end
+
+@section{cli-diag} Diagnostics
+@index diagnostics; error; warning; tip
+The compiler classifies every message it prints. On a color terminal each class has its own color:
+
+@table widths=22,16,62 title="Classes of diagnostics" label=tab-diag-classes
+Class | Color | Meaning
+`warning` | yellow | Suspicious code. Compilation continues and an output file is produced.
+`tip` | green | A suggestion that follows an error or warning and tells you how to fix it.
+`error` | purple | A problem in your program or in the command line. No output file is produced.
+`internal compiler error` | red | A bug in `ashc` itself. Please report it with the source file and the output of `--trace`.
+@end
+
+Errors detected while parsing show the position (`<input>:line:column`), the offending line and a marker under the problem. Errors detected by later stages (for example an undeclared variable, found while ASHIR is being compiled) name the symbol but not the line. At the end the compiler prints a summary with the number of errors and warnings.
+
+@note
+A few messages produced by older stages of the compiler are still written in Spanish; `ashc` translates the most common ones automatically. Where this manual shows such a message, the English translation is shown and the box is labelled accordingly.
+@end
+
+@example fail title="An undeclared variable" translate="error: undeclared variable: totl\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    totl = 5;
+    return total;
+}
+@end
+
+@example fail title="An error followed by a tip"
+uint64 counter = 0
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+[[ch-diag]] lists the most common diagnostics with their causes and fixes.
+
+@section{cli-exit} Exit Status of ashc
+@table widths=20,80
+Status | Meaning
+0 | Success (or `--help`, `--version`, `--license`, `--list-nlib`).
+1 | One or more errors (including internal errors and command line errors). No output file was written.
+@end
+
+@session
+$ ashc hello.ash --elf -s; echo "status $?"
+$ ashc missing.ash --elf -s; echo "status $?"     # fails
+@end
+
+@section{cli-env} Using ashc from Build Systems
+Because `ashc` reads one source file and writes one output, it fits naturally in `make` rules. Imports are resolved by the compiler itself, so a program made of several `.ash` files is compiled by naming only the main file.
+
+@code text nocheck
+# GNU make
+ASHC    ?= ashc
+CC      ?= gcc
+
+app: out/main.o
+	$(CC) out/main.o -o app
+
+out/main.o: main.ash lib/*.ash
+	$(ASHC) main.ash --elf -s -o out/main.o
+
+clean:
+	rm -rf out app
+@end
+
+The VS Code extension runs `ashc file --elf` (or `--compile` for `@bits(16)` files) with a temporary output path every time a file is saved and reports the compiler's errors in the editor ([[tool-vscode]]).

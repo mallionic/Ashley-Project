@@ -1,0 +1,232 @@
+@chapter{ch-pp} Compile-Time Directives and Macros
+@index directives; preprocessor; macros
+ASH has two independent compile-time mechanisms. **Directives** are lines that start with `%`; they are evaluated on the raw text before the lexer runs and decide which lines of the file are compiled. **Macros** (`define`, `macro`) and **aliases** (`typedef`, `redefine`) work on tokens after the lexer and replace names by other tokens. This chapter describes both, and how they differ.
+
+@table widths=26,37,37 title="Directives versus macros" label=tab-pp-vs-macro
+Aspect | `%` directives | `define` / `macro`
+When | Before the lexer, on text lines | After the lexer, on tokens
+Purpose | Conditional compilation, configuration, build errors | Named constants, code snippets
+Visible in code | No: `%define X 1` only exists inside directives | Yes: every use of the name is replaced
+Values | Evaluated as integers or strings | Arbitrary token sequences
+Scope | The file being compiled | The file and every file that imports it
+@end
+
+@section{pp-directives} Directive Syntax
+A directive is a line whose first non-blank character is `%`. The rest of the line is the directive name and its arguments; a `//` comment may follow. Directive lines are replaced by empty lines in the text passed to the lexer, so line numbers in later diagnostics remain correct.
+
+@table widths=34,66 title="Directives" label=tab-directives
+Directive | Meaning
+`%define NAME [value]` | Defines a directive symbol. Without a value it is 1. A value made of numbers, symbols and operators is evaluated immediately; any other value is kept as text. A symbol can be redefined at any time.
+`%undef NAME` | Removes a symbol.
+`%if expr` | Starts a conditional block, kept if *expr* is true (not empty and not 0).
+`%ifdef NAME` / `%ifndef NAME` | Kept if the symbol is (is not) defined.
+`%elif expr`, `%elifdef NAME`, `%elifndef NAME` | Alternative branches.
+`%else` | The branch kept when no previous branch was.
+`%endif` | Ends the conditional block.
+`%error text` | Stops the compilation with *text* as the error message (only in an active branch).
+`%warning text` | Prints a warning and continues.
+`%tip text` | Prints a tip and continues.
+`%ash_start` ... `%ash_end` | A configuration block that may contain only directives and comments.
+@end
+
+Conditional blocks can be nested to any depth. Every `%if` needs its `%endif`; an `%elif` after `%else` and a second `%else` are errors.
+
+@section{pp-symbols} Predefined Symbols
+@index ASH_BITS; ASH_FORMAT; predefined symbols
+Before the first directive is evaluated, the compiler defines symbols that describe the target of the current build:
+
+@table widths=26,30,44 title="Predefined directive symbols" label=tab-predefined
+Symbol | Values | Meaning
+`ASH_BITS` | 16, 32, 64 | Processor mode (`@bits` or `--bits`).
+`ASH_ARCH` | `i8086`, `i386`, `x86_64` | Architecture name.
+`ASH_PTR_SIZE` | 2, 4, 8 | Size of a pointer in bytes.
+`ASH_FORMAT` | `elf`, `coff`, `bin`, `exe`, `ashir` | Output format of this build.
+`ASH_TARGET` | `elf`, `windows`, `raw`, `exe`, `ashir` | The output format in one word.
+`ASH_OS` | `linux`, `windows`, `none` | Operating system implied by the format.
+`ASH_NO_LIBC` / `ASH_LIBC` | 1 / 0 | Whether the C library is excluded (`--no-libc`, `@nolibc`).
+`ASH_VERSION` | `1.0.0` | Version of the compiler.
+`ASH_ENDIAN` | `little` | Byte order.
+`ASH_X86_64`, `ASH_I386`, `ASH_I8086` | 1 | Defined only for the corresponding mode.
+`ASH_ELF`, `ASH_COFF`, `ASH_BIN`, `ASH_EXE` | 1 | Defined only for the corresponding format.
+`ASH_OBJECT` | 1 | Defined for relocatable objects (`elf`, `coff`).
+`ASH_BAREMETAL`, `ASH_RAW` | 1 | Defined for flat binaries.
+`ASH_LINUX`, `ASH_WINDOWS` | 1 | Defined for Linux (`elf`, `exe`) and Windows (`coff`) builds.
+@end
+
+@section{pp-expr} Directive Expressions
+Expressions in `%if`, `%elif` and `%define` may contain:
+
+- decimal, hexadecimal (`0x`) and binary (`0b`) numbers, and strings in double quotes;
+- symbol names; a name that is not defined evaluates to **its own text**, which is what makes comparisons such as `ASH_FORMAT == elf` work without quotes;
+- `defined(NAME)`;
+- the operators `!`, `**` (right-associative), `* / %`, `+ -`, `<< >>`, `== != < <= > >=`, `&`, `^`, `|`, `&&`, `||`, and parentheses, with the usual precedence.
+
+Comparisons are numeric when both sides are numbers and textual otherwise. Arithmetic is performed on 64-bit integers.
+
+@example run show=src,out title="Conditional compilation by target" label=ex-directives
+%ash_start
+%define MODE release
+%define LEVEL 3
+%ash_end
+
+%define BASE 2
+%define BITS (BASE ** 5) - 1                // 31
+%define MASK (1 << 4) | 3                   // 19
+
+%if ASH_BITS == 64 && ASH_FORMAT == elf
+%define TARGET_OK 1
+%endif
+
+%ifndef TARGET_OK
+%error "this example needs a 64-bit ELF build"
+%endif
+
+@Entry
+pub func main(): int64 {
+    int64 r = 0;
+%if ASH_BITS == 64
+    r += 64;
+%elif ASH_BITS == 32
+    r += 32;
+%else
+    r += 16;
+%endif
+%if MODE == release && LEVEL >= 3
+    r += 10;
+%endif
+%if BITS == 31 && (MASK & 16) != 0
+    r += 1;
+%endif
+%if ASH_NO_LIBC
+    printf("no libc\n");
+%else
+    printf("with libc, r=%d\n", r);
+%endif
+    return 0;
+}
+@end
+
+The same file compiled for different targets keeps different lines. The following session compiles a small file in three ways and shows which branch reached the ASHIR:
+
+@code ash file=target.ash
+@Entry
+pub func main(): int64 {
+%if ASH_FORMAT == elf
+    return 1;
+%elif ASH_FORMAT == coff
+    return 2;
+%else
+    return 3;
+%endif
+}
+@end
+
+@session
+$ ashc target.ash --stdout -s | grep ret
+$ ashc target.ash --elf --stdout -s | grep ret
+$ ashc target.ash --win --stdout -s | grep ret
+@end
+
+@example fail title="%error stops the build" translate="error: line 2: this program requires a 32-bit target\n1 error generated."
+%if ASH_BITS != 32
+%error "this program requires a 32-bit target"
+%endif
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+@section{pp-define} The define Macro
+@index define
+`define NAME tokens;` defines a token macro: from then on every occurrence of the identifier `NAME` in the file (and in files that import it) is replaced by the tokens. The terminating `;` may be omitted when the definition is the only thing on its line. Macros may refer to other macros, in any order of definition; expansion is repeated up to a depth of 128.
+
+@example run title="define constants" label=ex-define
+define WIDTH 80;
+define HEIGHT 25;
+define CELLS WIDTH * HEIGHT;
+define GREETING "hello";
+define VERBOSE 1
+
+@Entry
+pub func main(): int64 {
+    printf("%s, %d cells\n", GREETING, CELLS);
+    if (VERBOSE == 1) {
+        printf("width=%d height=%d\n", WIDTH, HEIGHT);
+    }
+    return 0;
+}
+@end
+
+@important
+A `define` replaces tokens, not values: `define CELLS WIDTH * HEIGHT;` followed by `CELLS / 2` gives `80 * 25 / 2`, which is evaluated left to right. Put parentheses in the definition when the macro is an expression: `define CELLS (WIDTH * HEIGHT);`.
+@end
+
+The libraries `<stdbool>`, `<null>`, `<math>` and `<syscalls>` use `define` to provide constants such as `TRUE`, `NULL`, `FX_ONE` and `SYS_WRITE`. Defining a name twice in the same file is an error.
+
+@section{pp-macro} Block Macros
+`macro NAME { statements }` defines a macro whose body is a block of statements. Writing `NAME` where a statement is expected inserts the statements. Block macros have no parameters; use a function, or a user annotation ([[ann-user]]), when the code needs arguments.
+
+@example run title="A block macro" label=ex-macro
+macro SAY_HELLO {
+    printf("hello from a macro\n");
+    count = count + 1;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 count = 0;
+    SAY_HELLO
+    SAY_HELLO
+    printf("count=%d\n", count);
+    return 0;
+}
+@end
+
+@section{pp-typedef} typedef
+`typedef` *type* *Name*`;` is also a token-level substitution: every later `Name` is replaced by the type. [[type-typedef]] describes it.
+
+@section{mod-redefine} redefine
+@index redefine
+`redefine` has two forms. The **alias form** gives a new name to an existing function (an ASH function, an `extern` or a C function):
+
+@code text nocheck
+redefine ret-type old-name(param-types) ret-type new-name(param-types)
+redefine global ret-type old-name(...) ret-type new-name(...)
+@end
+
+After it, calls to the new name (and `&new-name`) are compiled as calls to the old one. Without `global` the alias is valid in the current file; with `global` it is valid in every ASH file compiled after it in the same program.
+
+@example run title="An alias for printf" label=ex-redefine-alias
+redefine uint64 printf(char[], ...) uint64 out(char[]...)
+
+@Entry
+pub func main(): int64 {
+    out("printed through an alias: %d\n", 42);
+    return 0;
+}
+@end
+
+The **definition form** defines a function with a body under a name that must be exported, replacing any other function of the same name:
+
+@code text nocheck
+redefine global ret-type name(parameters) { body }
+@end
+
+The function becomes a public symbol with override right 100 ([[mod-override]]), which makes this the simplest way to export an implementation to C, for example a wrapper around a class method. Exposing a `priv` method this way is an error.
+
+@code ash top
+class Calculator {
+    pub func add(uint64 a, uint64 b): uint64 { return a + b; }
+}
+
+general static uint64 calls = 0
+
+redefine global uint64 compute(uint64 a, uint64 b) {
+    calls = calls + 1;
+    return Calculator.add(a, b);
+}
+@end
+
+C code can then call `compute` with the prototype `unsigned long compute(unsigned long, unsigned long);`.

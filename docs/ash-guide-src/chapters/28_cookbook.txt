@@ -1,0 +1,696 @@
+@chapter{ch-cookbook} Cookbook: Complete Programs
+@index cookbook; examples
+This chapter collects complete programs that combine the features described in this manual. Each program solves a small, realistic task, is explained step by step, and was compiled, linked and executed while the manual was built; the output shown is the real output. Use them as starting points for your own programs.
+
+@section{cb-sieve} Prime Numbers with the Sieve of Eratosthenes
+The sieve marks the multiples of every prime in an array of flags. It shows array declaration with a computed size, nested loops with a variable step, and `continue`.
+
+@example run title="Sieve of Eratosthenes" label=ex-cb-sieve
+func sieve(int64 limit): int64 {
+    uint8[limit + 1] composite;           // all zero: every number is a candidate
+    int64 count = 0;
+    for (int64 n = 2; n <= limit; n++) {
+        if (composite[n] != 0) {
+            continue;
+        }
+        count++;
+        if (count <= 20) {
+            printf("%d ", n);
+        }
+        for (int64 m = n * n; m <= limit; m = m + n) {
+            composite[m] = 1;
+        }
+    }
+    printf("\n");
+    return count;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 total = sieve(100000);
+    printf("there are %d primes below 100000\n", total);
+    return 0;
+}
+@end
+
+@section{cb-sort} Sorting: Insertion Sort and qsort
+The same data is sorted twice: with an insertion sort written in ASH and with the C library's `qsort`, which receives an ASH comparison function as a callback.
+
+@example run title="Two ways to sort an array" label=ex-cb-sort
+extern void qsort(int64 base, int64 n, int64 size, int64 cmp);
+
+func insertion_sort(int64* v, int64 n): void {
+    for (int64 i = 1; i < n; i++) {
+        int64 key = v[i];
+        int64 j = i - 1;
+        while (j >= 0 && v[j] > key) {
+            v[j + 1] = v[j];
+            j--;
+        }
+        v[j + 1] = key;
+    }
+}
+
+func by_value(int64 a, int64 b): int64 {
+    int64 x = *(int64*)a;
+    int64 y = *(int64*)b;
+    if (x < y) { return -1; }
+    if (x > y) { return 1; }
+    return 0;
+}
+
+func show(string label, int64* v, int64 n): void {
+    printf("%s:", label);
+    for (int64 i = 0; i < n; i++) {
+        printf(" %d", v[i]);
+    }
+    printf("\n");
+}
+
+@Entry
+pub func main(): int64 {
+    int64[] a = {42, 7, 19, 3, 88, 1, 56, 23};
+    int64[] b = {42, 7, 19, 3, 88, 1, 56, 23};
+    insertion_sort(a, #a);
+    qsort(b, #b, 8, by_value);
+    show("insertion", a, #a);
+    show("qsort    ", b, #b);
+    return 0;
+}
+@end
+
+@section{cb-list} A Linked List with Structures
+A singly linked list stores its nodes in memory obtained from `malloc`. The program shows structures with pointer fields, pointer chains and a function that walks the list.
+
+@example run title="A singly linked list" label=ex-cb-list
+extern void* malloc(uint64 size);
+extern void free(void* p);
+
+typedef struct {
+    int64 value;
+    uint64 next;          // address of the next Node, or 0
+} Node;
+
+func push(uint64 head, int64 value): uint64 {
+    Node* n = malloc(16);
+    n->value = value;
+    n->next = head;
+    return n;
+}
+
+func sum(uint64 head): int64 {
+    int64 total = 0;
+    uint64 cur = head;
+    while (cur != 0) {
+        Node* n = cur;
+        total = total + n->value;
+        cur = n->next;
+    }
+    return total;
+}
+
+func print_list(uint64 head): void {
+    uint64 cur = head;
+    while (cur != 0) {
+        Node* n = cur;
+        printf("%d -> ", n->value);
+        cur = n->next;
+    }
+    printf("end\n");
+}
+
+@Entry
+pub func main(): int64 {
+    uint64 list = 0;
+    for (int64 i = 1; i <= 5; i++) {
+        list = push(list, i * 10);
+    }
+    print_list(list);
+    printf("sum=%d\n", sum(list));
+    return 0;
+}
+@end
+
+@section{cb-stack} A Stack Calculator in Reverse Polish Notation
+A tiny RPN calculator evaluates an expression given as a string. It uses a fixed-size array as a stack, `<string>` character tests, and `switch` on characters.
+
+@example run title="Reverse Polish calculator" label=ex-cb-rpn
+import <string>;
+
+func rpn(uint8* text): int64 {
+    int64[32] stack;
+    int64 sp = 0;
+    int64 i = 0;
+    while (text[i] != 0) {
+        int64 c = text[i];
+        if (isdigit(c) == 1) {
+            int64 value = 0;
+            while (isdigit(text[i]) == 1) {
+                value = value * 10 + text[i] - '0';
+                i++;
+            }
+            stack[sp] = value;
+            sp++;
+        } else {
+            if (c != ' ') {
+                int64 b = stack[sp - 1];
+                int64 a = stack[sp - 2];
+                sp = sp - 2;
+                int64 r = 0;
+                switch (c) {
+                    case '+': r = a + b; break;
+                    case '-': r = a - b; break;
+                    case '*': r = a * b; break;
+                    case '/': r = a / b; break;
+                }
+                stack[sp] = r;
+                sp++;
+            }
+            i++;
+        }
+    }
+    return stack[0];
+}
+
+@Entry
+pub func main(): int64 {
+    printf("3 4 + 2 *       = %d\n", rpn("3 4 + 2 *"));
+    printf("100 7 / 5 -     = %d\n", rpn("100 7 / 5 -"));
+    printf("2 3 4 * + 10 -  = %d\n", rpn("2 3 4 * + 10 -"));
+    return 0;
+}
+@end
+
+@section{cb-words} Counting Lines, Words and Characters
+A `wc`-like counter that reads its own source text from a global `char[]` array. It uses a state variable to detect the beginning of words.
+
+@example run title="A word counter" label=ex-cb-wc
+import <string>;
+
+general char[] text = """The Ashley Project
+makes systems programming
+close to the machine
+and easy to read."""
+
+@Entry
+pub func main(): int64 {
+    int64 lines = 1;
+    int64 words = 0;
+    int64 in_word = 0;
+    for (int64 i = 0; i < #text; i++) {
+        int64 c = text[i];
+        if (c == '\n') { lines++; }
+        if (isspace(c) == 1) {
+            in_word = 0;
+        } elif (in_word == 0) {
+            in_word = 1;
+            words++;
+        }
+    }
+    printf("lines=%d words=%d chars=%d\n", lines, words, #text);
+    return 0;
+}
+@end
+
+@section{cb-base} Number Base Conversion
+Converting numbers between bases with `<string>`: `str_to_int` parses text in any base, `uint_to_str` formats it.
+
+@example run title="Printing numbers in several bases" label=ex-cb-base
+import <string>;
+
+@Entry
+pub func main(): int64 {
+    uint8[65] buf;
+    string[] inputs = {"255", "0x1F", "0b1010", "777"};
+    for (int64 i = 0; i < #inputs; i++) {
+        int64 v = str_to_int(inputs[i], 0);
+        printf("%-7s = %4d", inputs[i], v);
+        printf("  bin %s", uint_to_str(v, &buf, 2));
+        printf("  oct %s", uint_to_str(v, &buf, 8));
+        printf("  hex %s", uint_to_str(v, &buf, 16));
+        printf("  b36 %s\n", uint_to_str(v, &buf, 36));
+    }
+    return 0;
+}
+@end
+
+@section{cb-fnv} Hashing with FNV-1a
+FNV-1a is a simple, fast hash for strings. The program uses 64-bit unsigned arithmetic, `^` and multiplication modulo 2^64.
+
+@example run title="FNV-1a 64-bit hash" label=ex-cb-fnv
+func fnv1a(uint8* s): uint64 {
+    uint64 h = 0xcbf29ce484222325;          // offset basis
+    uint64 prime = 0x100000001b3;           // FNV prime
+    int64 i = 0;
+    while (s[i] != 0) {
+        uint64 c = s[i];
+        h = h ^ c;
+        h = h * prime;
+        i++;
+    }
+    return h;
+}
+
+@Entry
+pub func main(): int64 {
+    string[] keys = {"", "a", "hello", "The Ashley Project"};
+    for (int64 i = 0; i < #keys; i++) {
+        printf("fnv1a(\"%s\") = %016llx\n", keys[i], fnv1a(keys[i]));
+    }
+    return 0;
+}
+@end
+
+@section{cb-matrix} Matrix Multiplication
+Two-dimensional arrays, triple loops and a helper that prints a matrix.
+
+@example run title="Multiplying two 3x3 matrices" label=ex-cb-matmul
+func fill(int64 base, int64 step): int64 {
+    return base + step;
+}
+
+@Entry
+pub func main(): int64 {
+    int64[3][3] a;
+    int64[3][3] b;
+    int64[3][3] c;
+    for (int64 i = 0; i < 3; i++) {
+        for (int64 j = 0; j < 3; j++) {
+            a[i][j] = i * 3 + j + 1;          // 1..9
+            if (i == j) { b[i][j] = 2; }      // 2 * identity
+        }
+    }
+    b[0][2] = 1;
+    for (int64 i = 0; i < 3; i++) {
+        for (int64 j = 0; j < 3; j++) {
+            int64 s = 0;
+            for (int64 k = 0; k < 3; k++) {
+                s = s + a[i][k] * b[k][j];
+            }
+            c[i][j] = s;
+        }
+    }
+    for (int64 i = 0; i < 3; i++) {
+        printf("%4d %4d %4d\n", c[i][0], c[i][1], c[i][2]);
+    }
+    return 0;
+}
+@end
+
+@section{cb-mandel} ASCII Mandelbrot Set in Fixed Point
+The Mandelbrot set drawn with characters, computed entirely with Q16.16 fixed-point arithmetic from `<math>`: no floating-point instruction is used, so the same code runs on bare metal.
+
+@example run title="Fixed-point Mandelbrot" label=ex-cb-mandel
+import <math>;
+
+@Entry
+pub func main(): int64 {
+    string shades = " .:-=+*#%@";
+    for (int64 row = 0; row < 22; row++) {
+        for (int64 col = 0; col < 64; col++) {
+            int64 cx = fx(col - 44) / 20;          // real part, about -2.2 .. 1.0
+            int64 cy = fx(row - 11) / 10;          // imaginary part, about -1.1 .. 1.1
+            int64 x = 0;
+            int64 y = 0;
+            int64 n = 0;
+            while (n < 9) {
+                int64 x2 = fx_mul(x, x);
+                int64 y2 = fx_mul(y, y);
+                if (x2 + y2 > fx(4)) { break; }
+                int64 t = x2 - y2 + cx;
+                y = 2 * fx_mul(x, y) + cy;
+                x = t;
+                n++;
+            }
+            printf("%c", shades[n]);
+        }
+        printf("\n");
+    }
+    return 0;
+}
+@end
+
+@section{cb-life} Conway's Game of Life
+A cellular automaton on a small toroidal grid, printed for three generations. It uses two-dimensional arrays, modular arithmetic for wrap-around and a function that counts neighbours.
+
+@example run title="Game of Life: a glider" label=ex-cb-life
+define W 12;
+define H 8;
+
+func neighbours(int64* g, int64 r, int64 c): int64 {
+    int64 n = 0;
+    for (int64 dr = -1; dr <= 1; dr++) {
+        for (int64 dc = -1; dc <= 1; dc++) {
+            if (dr != 0 || dc != 0) {
+                int64 rr = (r + dr + H) % H;
+                int64 cc = (c + dc + W) % W;
+                n = n + g[rr * W + cc];
+            }
+        }
+    }
+    return n;
+}
+
+func show(int64* g, int64 gen): void {
+    printf("generation %d\n", gen);
+    for (int64 r = 0; r < H; r++) {
+        for (int64 c = 0; c < W; c++) {
+            if (g[r * W + c] == 1) { printf("#"); } else { printf("."); }
+        }
+        printf("\n");
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    int64[W * H] grid;
+    int64[W * H] next;
+    grid[0 * W + 1] = 1;                 // a glider
+    grid[1 * W + 2] = 1;
+    grid[2 * W + 0] = 1;
+    grid[2 * W + 1] = 1;
+    grid[2 * W + 2] = 1;
+    for (int64 gen = 0; gen < 3; gen++) {
+        show(grid, gen);
+        for (int64 r = 0; r < H; r++) {
+            for (int64 c = 0; c < W; c++) {
+                int64 n = neighbours(grid, r, c);
+                int64 alive = grid[r * W + c];
+                int64 v = 0;
+                if (n == 3) { v = 1; }
+                if (n == 2 && alive == 1) { v = 1; }
+                next[r * W + c] = v;
+            }
+        }
+        for (int64 k = 0; k < W * H; k++) {
+            grid[k] = next[k];
+        }
+    }
+    return 0;
+}
+@end
+
+@section{cb-hexdump} A Hex Dump Tool
+A program that reads a file with the C standard I/O functions and prints it in the classic hex dump format: offset, sixteen bytes in hexadecimal and the printable characters.
+
+@example run title="Hex dump of a file" label=ex-cb-hexdump
+import <stdio>;
+
+@Entry
+pub func main(): int64 {
+    void* w = fopen("/tmp/ash_hexdump_demo.bin", "wb");
+    fputs("The Ashley Project\n\x01\x02\x7F binary bytes too\n", w);
+    fclose(w);
+
+    void* f = fopen("/tmp/ash_hexdump_demo.bin", "rb");
+    if (f == 0) {
+        puts("cannot open file");
+        return 1;
+    }
+    uint8[16] row;
+    int64 offset = 0;
+    loop {
+        int64 n = fread(&row, 1, 16, f);
+        if (n == 0) { break; }
+        printf("%08x  ", offset);
+        for (int64 i = 0; i < 16; i++) {
+            if (i < n) { printf("%02x ", row[i]); } else { printf("   "); }
+        }
+        printf(" |");
+        for (int64 i = 0; i < n; i++) {
+            int64 c = row[i];
+            if (c >= 32 && c < 127) { printf("%c", c); } else { printf("."); }
+        }
+        printf("|\n");
+        offset = offset + n;
+    }
+    fclose(f);
+    return 0;
+}
+@end
+
+@section{cb-wav} Writing a WAV File: a Bytebeat Generator
+*Bytebeat* is music produced by a one-line formula of a time counter `t`. The program writes one second of 8 kHz, 8-bit sound to a WAV file. It shows writing binary data with `fwrite`, building a file header field by field in a byte buffer, and shifts and bitwise operators.
+
+@example run title="Bytebeat to a WAV file" label=ex-cb-wav
+import <stdio>;
+
+func put32(uint8* p, int64 at, int64 v): void {
+    p[at] = v & 255;
+    p[at + 1] = (v >> 8) & 255;
+    p[at + 2] = (v >> 16) & 255;
+    p[at + 3] = (v >> 24) & 255;
+}
+
+func put16(uint8* p, int64 at, int64 v): void {
+    p[at] = v & 255;
+    p[at + 1] = (v >> 8) & 255;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 rate = 8000;
+    int64 samples = 8000;
+    uint8[44] h;
+    memcpy(&h, "RIFF", 4);
+    put32(&h, 4, 36 + samples);
+    memcpy(&h + 8, "WAVEfmt ", 8);
+    put32(&h, 16, 16);              // size of the fmt chunk
+    put16(&h, 20, 1);               // PCM
+    put16(&h, 22, 1);               // mono
+    put32(&h, 24, rate);
+    put32(&h, 28, rate);            // bytes per second
+    put16(&h, 32, 1);               // block align
+    put16(&h, 34, 8);               // bits per sample
+    memcpy(&h + 36, "data", 4);
+    put32(&h, 40, samples);
+
+    uint8[samples] pcm;
+    for (int64 t = 0; t < samples; t++) {
+        pcm[t] = (t * ((t >> 12 | t >> 8) & 63 & t >> 4)) & 255;
+    }
+    void* f = fopen("/tmp/ash_bytebeat.wav", "wb");
+    fwrite(&h, 1, 44, f);
+    fwrite(&pcm, 1, samples, f);
+    fclose(f);
+    printf("wrote /tmp/ash_bytebeat.wav: %d bytes of header, %d samples\n", #h, samples);
+    printf("first samples: %d %d %d %d\n", pcm[4097], pcm[4098], pcm[5000], pcm[7000]);
+    return 0;
+}
+@end
+
+@note
+`memcpy` is called here without importing `<string>`: the C library's `memcpy` is used as an implicit external function. Importing `<string>` would use the ASH implementation instead; both work.
+@end
+
+@section{cb-cat} cat Without the C Library
+A version of `cat` that uses only system calls. It is built with `--no-libc` and linked with `ld`, producing a static executable with no dependencies. It reads from standard input and copies to standard output in blocks.
+
+@example run nolibc stdin="first line\nsecond line\n" title="cat with system calls only" label=ex-cb-cat
+import <syscalls>;
+
+@Entry
+pub func _start(): int64 {
+    uint8[4096] buf;
+    int64 total = 0;
+    loop {
+        int64 n = sys_read(STDIN, &buf, 4096);
+        if (n <= 0) { break; }
+        sys_write(STDOUT, &buf, n);
+        total = total + n;
+    }
+    print("-- copied ");
+    print_int(total);
+    println(" bytes");
+    sys_exit(0);
+    return 0;
+}
+@end
+
+@section{cb-cli} A Command Line Tool with Options
+A program that parses options in the usual style: flags (`-v`), an option with a value (`-n 3`) and positional arguments. It uses `<args>` and `<string>`.
+
+@example run args="-v -n 3 alpha beta" title="Parsing command line options" label=ex-cb-cli
+import <args>;
+import <string>;
+
+@Entry
+pub func main(int64 argc, int64 argv): int64 {
+    int64 verbose = 0;
+    int64 repeat_count = 1;
+    int64 first_positional = 0;
+    int64 i = 1;
+    while (i < argc) {
+        uint8* a = arg_at(argv, i);
+        if (str_equals(a, "-v") == 1) {
+            verbose = 1;
+        } elif (str_equals(a, "-n") == 1) {
+            i++;
+            repeat_count = atoi(arg_at(argv, i));
+        } else {
+            if (first_positional == 0) { first_positional = i; }
+        }
+        i++;
+    }
+    if (verbose == 1) {
+        printf("verbose mode, repeat=%d, first positional at %d\n", repeat_count, first_positional);
+    }
+    for (int64 k = first_positional; k < argc; k++) {
+        repeat (repeat_count) {
+            printf("%s ", arg_at(argv, k));
+        }
+        printf("\n");
+    }
+    return 0;
+}
+@end
+
+@section{cb-jit} Generating Machine Code at Run Time
+A `runnable` array receives machine code produced by the program itself: a function that computes `x * k + c` for constants chosen at run time. The example combines code generation, little-endian encoding of immediates and calling the generated code.
+
+@example run title="A tiny JIT compiler" label=ex-cb-jit
+runnable byte[] code = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+general static int64 pos = 0
+
+func b(int64 v): void {
+    code[pos] = v & 255;
+    pos = pos + 1;
+}
+
+func imm32(int64 v): void {
+    b(v);
+    b(v >> 8);
+    b(v >> 16);
+    b(v >> 24);
+}
+
+// generate: mov rax, rdi ; imul rax, rax, k ; add rax, c ; ret
+func compile(int64 k, int64 c): void {
+    pos = 0;
+    b(0x48); b(0x89); b(0xF8);                  // mov rax, rdi
+    b(0x48); b(0x69); b(0xC0); imm32(k);        // imul rax, rax, imm32
+    b(0x48); b(0x05); imm32(c);                 // add rax, imm32
+    b(0xC3);                                    // ret
+}
+
+@Entry
+pub func main(): int64 {
+    compile(3, 1);
+    printf("3x+1 at x=5: %d\n", code(5));
+    compile(10, -7);
+    printf("10x-7 at x=5: %d\n", code(5));
+    printf("generated %d bytes\n", pos);
+    return 0;
+}
+@end
+
+@section{cb-callback} Callbacks and Function Tables
+A table of operations stored as function addresses in an array, selected at run time and called through a variable. This is how interpreters and state machines dispatch on an opcode.
+
+@example run title="A dispatch table of functions" label=ex-cb-dispatch
+func op_add(int64 a, int64 b): int64 { return a + b; }
+func op_sub(int64 a, int64 b): int64 { return a - b; }
+func op_mul(int64 a, int64 b): int64 { return a * b; }
+func op_max(int64 a, int64 b): int64 { if (a > b) { return a; } return b; }
+
+@Entry
+pub func main(): int64 {
+    int64[4] table;
+    table[0] = &op_add;
+    table[1] = &op_sub;
+    table[2] = &op_mul;
+    table[3] = &op_max;
+    string[] names = {"add", "sub", "mul", "max"};
+    for (int64 i = 0; i < 4; i++) {
+        int64 f = table[i];
+        printf("%s(12, 5) = %d\n", names[i], f(12, 5));
+    }
+    return 0;
+}
+@end
+
+@section{cb-collatz} Statistics with Variadic Functions
+Variadic ASH functions that compute the maximum, minimum and average of their arguments, used on the lengths of Collatz sequences.
+
+@example run title="Collatz lengths and variadic statistics" label=ex-cb-collatz
+func collatz(int64 n): int64 {
+    int64 steps = 0;
+    while (n != 1) {
+        if ((n & 1) == 0) { n = n / 2; } else { n = 3 * n + 1; }
+        steps++;
+    }
+    return steps;
+}
+
+func maximum(int64 first, ...): int64 {
+    int64 m = first;
+    for (int64 i = 0; i < va_count(); i++) {
+        if (va_arg(i) > m) { m = va_arg(i); }
+    }
+    return m;
+}
+
+func average(int64 first, ...): int64 {
+    int64 total = first;
+    for (int64 i = 0; i < va_count(); i++) {
+        total = total + va_arg(i);
+    }
+    return total / (va_count() + 1);
+}
+
+@Entry
+pub func main(): int64 {
+    int64 a = collatz(7);
+    int64 b = collatz(27);
+    int64 c = collatz(97);
+    int64 d = collatz(871);
+    printf("lengths: %d %d %d %d\n", a, b, c, d);
+    printf("max=%d average=%d\n", maximum(a, b, c, d), average(a, b, c, d));
+    return 0;
+}
+@end
+
+@section{cb-boot16} A Real-Mode Routine
+A 16-bit flat binary that computes a checksum of a table in real mode. It shows `@bits(16)`, `@originoffs`, arrays in a flat image and running the result in the 8086 emulator of the test suite.
+
+@example bits=16 org=0x100 run title="A 16-bit checksum routine" label=ex-cb-boot16
+@bits(16)
+@originoffs(0x100)
+
+@Entry
+pub func _start(): int16 {
+    uint16[] table = {0x1234, 0x0F0F, 0x00FF, 0x7000};
+    int16 sum = 0;
+    for (int16 i = 0; i < 4; i++) {
+        sum = sum ^ table[i];
+    }
+    return sum;               // AX = 0x1234 ^ 0x0F0F ^ 0x00FF ^ 0x7000
+}
+@end
+
+@section{cb-win} A Windows Console Program
+A complete Windows program that writes several lines to the console with `WriteFile` and ends with `ExitProcess`. It was built with `--win`, linked with MinGW-w64 and executed under Wine.
+
+@example win run title="Windows console output" label=ex-cb-win
+extern uint64 GetStdHandle(int32 nStdHandle);
+extern int32  WriteFile(uint64 h, uint64 buf, uint32 n, uint64 written, uint64 overlapped);
+extern void   ExitProcess(uint32 code);
+
+func say(uint64 h, uint8* text): void {
+    int64 n = 0;
+    while (text[n] != 0) { n++; }
+    uint32 written = 0;
+    WriteFile(h, text, n, &written, 0);
+}
+
+@Entry
+pub func main(): void {
+    uint64 out = GetStdHandle(-11);
+    say(out, "ASH on Windows\r\n");
+    for (int64 i = 0; i < 3; i++) {
+        say(out, "  a line from a loop\r\n");
+    }
+    ExitProcess(0);
+}
+@end

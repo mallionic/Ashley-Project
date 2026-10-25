@@ -1,0 +1,260 @@
+@chapter{ch-asm} Inline Assembly and Machine Code
+@index inline assembly; asm
+ASH lets you leave the language at any point and write processor instructions directly. Four mechanisms are available, from the most comfortable to the most raw: `asm { }` blocks, GCC-style `asm("...")` statements, `emit` statements that place literal bytes in the code, and `runnable` arrays that hold executable code as data. `@naked` functions combine them to produce functions without any compiler-generated code. This chapter describes each mechanism and the rules for mixing assembly with compiled code.
+
+@section{asm-block} asm Blocks
+@code text nocheck
+asm {
+    instruction
+    ...
+}
+volatile asm { ... }
+@end
+
+The body of an `asm` block is assembly in Intel syntax, one instruction per line, exactly as accepted by the `shasm` assembler ([[ch-shasm]]): mnemonics, registers, memory operands with size keywords (`qword [rax+8]`), immediate values, labels, comments starting with `;`, and assembler directives such as `db`. The block is extracted from the source before the lexer runs ([[arch-asmblocks]]), so ASH lexical rules do not apply inside it.
+
+`volatile asm` marks the block as having side effects; the compiler never removes or moves an `asm` block in ASH 1.0, so both forms behave the same, and `volatile` documents intent.
+
+@subsection{asm-vars} Using ASH variables
+@index asm variables
+Inside an `asm` block, the name of an ASH local variable or parameter can be used wherever an operand is allowed. Before the block is assembled, the code generator replaces each name with the location that holds the variable at that point of the function: a register such as `r12`, or a memory operand such as `qword [rbp-0x18]`.
+
+@example run asm=main show=src,out,asm title="An asm block that reads and writes variables" label=ex-asm-vars
+@Entry
+pub func main(): int64 {
+    int64 x = 40;
+    int64 doubled = 0;
+    asm {
+        mov rax, x          ; x is replaced by its register or stack slot
+        add rax, 2
+        shl rax, 1
+        mov doubled, rax
+    }
+    printf("x=%d doubled=%d\n", x, doubled);
+    return 0;
+}
+@end
+
+Names of registers (`rax`, `eax`, `al`, `r8d`, `xmm0`, `cr0` ...) always denote registers inside an `asm` block, never variables. Choose variable names that do not collide with register names.
+
+@subsection{asm-labels} Labels and control flow
+Labels can be used for loops and branches inside a block. Labels starting with a dot (`.loop`) are local to the block. Each block is assembled separately, so a jump cannot target a label in another block or in compiled code.
+
+@example run asm=popcount show=src,out,asm title="A loop written in assembly" label=ex-asm-loop
+func popcount(uint64 v): int64 {
+    int64 n = 0;
+    asm {
+        mov rax, v
+        xor rcx, rcx
+    .loop:
+        test rax, rax
+        jz .done
+        mov rdx, rax
+        and rdx, 1
+        add rcx, rdx
+        shr rax, 1
+        jmp .loop
+    .done:
+        mov n, rcx
+    }
+    return n;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("popcount(0xFF00FF)=%d popcount(7)=%d\n", popcount(0xFF00FF), popcount(7));
+    return 0;
+}
+@end
+
+@subsection{asm-regs} Registers: what an asm block may change
+A function that contains assembly is compiled conservatively: it receives a full stack frame, saves all of `r12`–`r15`, keeps its parameters in stack slots and its locals in `r12`–`r15` or stack slots. Within that model the following rules apply on x86-64:
+
+@table widths=34,66 title="Register rules for asm blocks (x86-64)" label=tab-asm-regs
+Registers | Rule
+`rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8`–`r11` | Free scratch registers. Their values are not preserved across the block and the compiler does not expect them to survive.
+`r12`–`r15` | May hold ASH variables. Change them only through the variable names, or save and restore them yourself.
+`rbx` | Callee-saved in the System V ABI, and not saved by ASH: if you modify it, restore it before the end of the block.
+`rbp`, `rsp` | Frame and stack pointers: do not modify them, except for balanced `push` / `pop` sequences.
+Flags | May be changed freely.
+@end
+
+On the 32-bit target all variables live in the frame (`[ebp-n]`), and `eax`, `ecx` and `edx` are free scratch registers; preserve `ebx`, `esi`, `edi`, `ebp` and `esp`.
+
+@section{asm-string} The asm("...") Form
+@index asm volatile; constraints; GCC syntax
+For compatibility with code written for GCC and Clang, ASH accepts the statement form:
+
+@code text nocheck
+asm [volatile] ( "template" ["template"...] [ : outputs [ : inputs [ : clobbers ]]] );
+@end
+
+The template is one or more string literals (concatenated); instructions are separated by `;` or `\n`. Inside the template:
+
+@table widths=26,74 title="Placeholders in asm templates" label=tab-asm-placeholders
+Placeholder | Replaced by
+`{name}` | The location of the ASH variable `name`.
+`{name[i]}` | The element `i` of the array `name` (memory operand).
+`%0`, `%1`, ... | The operands listed after the colons, numbered from 0: outputs first, then inputs.
+`%[name]` | The operand declared with `[name] "constraint"(variable)`.
+`%%` | A literal `%`.
+@end
+
+Constraint strings (`"=r"`, `"+r"`, `"r"`, `"=m"` ...) and the clobber list are accepted for compatibility but do not change code generation: every operand is simply the location of the named variable. `asm volatile("");` is accepted as a compiler barrier and generates nothing.
+
+@example run show=src,out title="GCC-style asm statements" label=ex-asm-string
+@Entry
+pub func main(): int64 {
+    int64 x = 40;
+    int64 y = 5;
+    int64 r = 0;
+    int64[] v = {1, 2, 3};
+    asm volatile("");                                          // barrier only
+    asm volatile("add {x}, 2");                                // x = 42
+    asm("mov rax, %0\n" "add rax, %1\n" "mov %0, rax" : "+r"(x) : "r"(y));   // x = 47
+    asm volatile("mov rax, {v[2]}; add rax, %[a]; mov %[d], rax" : [d] "=m"(r) : [a] "r"(x));
+    uint64 lo = 0;
+    uint64 hi = 0;
+    asm volatile("rdtsc; mov {lo}, rax; mov {hi}, rdx");      // time stamp counter
+    int64 ticking = 0;
+    if (hi + lo != 0) { ticking = 1; }
+    printf("x=%d r=%d ticking=%d\n", x, r, ticking);
+    return 0;
+}
+@end
+
+The library `<syscalls>` is written with this form: its `syscall6` function loads six variables into the system call registers with `{name}` placeholders and executes `syscall` ([[nlib-syscalls]]).
+
+@section{asm-emit} emit: Raw Bytes
+@index emit; machine code bytes
+`emit(b1, b2, ...)` places the given bytes at the current position of the instruction stream, without any interpretation. The variants `emit16`, `emit32` and `emit64` place 16, 32 and 64-bit values in little-endian order. `@emit(...)` is the same as `emit(...)`. The intrinsics `ashley.InjectByte`, `ashley.InjectBytes`, `ashley.InjectWord`, `ashley.InjectDword` and `ashley.InjectQword` are long names for the same operations.
+
+@table widths=36,64 title="Byte-emitting statements" label=tab-emit
+Statement | Bytes produced
+`emit(0x90);` | `90`
+`emit(0xB8, 0x2A, 0, 0, 0);` | `B8 2A 00 00 00` (`mov eax, 42`)
+`emit16(0xC031);` | `31 C0` (`xor eax, eax`)
+`emit32(0x90909090);` | `90 90 90 90`
+`emit64(0x0102030405060708);` | `08 07 06 05 04 03 02 01`
+`@emit(0x0F, 0x01, 0xD9);` | `0F 01 D9` (`vmmcall`)
+`ashley.InjectByte(0x90);` | `90`
+@end
+
+@example run asm=main show=src,out,asm title="Machine code written as bytes" label=ex-emit
+@Entry
+pub func main(): int64 {
+    int64 r = 0;
+    emit16(0xC031);                    // xor eax, eax   (bytes 31 C0)
+    emit32(0x90909090);                // four nops
+    ashley.InjectByte(0x90);           // one more nop
+    emit(0x83, 0xC0, 0x07);            // add eax, 7
+    asm volatile("mov {r}, rax");      // collect the result
+    return r;                          // exit status 7
+}
+@end
+
+`emit` is the tool of last resort: it bypasses the assembler, so a wrong byte produces a wrong instruction silently. It is useful for instructions that an assembler does not know yet, for exact padding, and for byte sequences required by firmware (signatures, magic numbers inside code).
+
+@section{asm-runnable} Runnable Arrays
+A `runnable` global array is data that can be executed ([[var-runnable]]). Combined with indexing it gives a simple way to generate or patch code at run time: write the bytes of a function into the array, then call the array like a function.
+
+@example run title="Generating a function at run time" label=ex-jit
+runnable byte[] code = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+// write "mov eax, imm32 ; add eax, edi ; ret" with the chosen constant
+func make_adder(int64 k): void {
+    code[0] = 0xB8;
+    code[1] = k & 255;
+    code[2] = (k >> 8) & 255;
+    code[3] = (k >> 16) & 255;
+    code[4] = (k >> 24) & 255;
+    code[5] = 0x01;              // add eax, edi
+    code[6] = 0xF8;
+    code[7] = 0xC3;              // ret
+}
+
+@Entry
+pub func main(): int64 {
+    make_adder(1000);
+    printf("%d ", code(1));
+    make_adder(5);
+    printf("%d\n", code(37));
+    return 0;
+}
+@end
+
+@section{asm-naked} Naked Functions
+`@naked` functions ([[ann-naked]]) contain only assembly and `emit` statements. Because the compiler generates no frame, the code sees the registers and the stack exactly as the caller left them: on x86-64 the arguments are in `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` and the return address is at `[rsp]`. They are the right tool for:
+
+- interrupt and exception handlers (which end with `iretq` instead of `ret`);
+- the first instructions of a kernel or boot loader (setting up a stack before any compiled code runs);
+- trampolines and thunks that must not touch the stack;
+- functions whose exact bytes are specified externally.
+
+@example run show=src,out title="A naked function with an asm string" label=ex-naked-string
+@naked
+func twice(int64 x): int64 {
+    asm volatile("lea rax, [rdi + rdi]; ret");
+}
+
+@naked
+func max2(int64 a, int64 b): int64 {
+    asm {
+        mov rax, rdi
+        cmp rdi, rsi
+        cmovl rax, rsi
+        ret
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    printf("twice(21)=%d max2(3, 9)=%d\n", twice(21), max2(3, 9));
+    return 0;
+}
+@end
+
+@section{asm-32} Assembly in 32-bit and 16-bit Programs
+In a file with `@bits(32)` or `@bits(16)` the assembler works in the corresponding mode, so `asm` blocks must use 32-bit or 16-bit instructions and registers. The following program is a complete 32-bit Linux executable that writes a message with the `int 0x80` system call interface; it is built with `--exe` and needs no linker.
+
+@example exe run asm start=0x54 asmlimit=40 title="A 32-bit Linux executable with int 0x80" label=ex-asm32
+@bits(32)
+@originoffs(0x08048000)
+
+@Entry
+pub func _start(): int32 {
+    string message = "Hello from 32-bit assembly\n";
+    asm {
+        mov eax, 4          ; sys_write
+        mov ebx, 1          ; stdout
+        mov ecx, message    ; address of the text
+        mov edx, 27         ; length
+        int 0x80
+
+        mov eax, 1          ; sys_exit
+        xor ebx, ebx        ; status 0
+        int 0x80
+    }
+    return 0;
+}
+@end
+
+@section{asm-howto} How an asm Block Reaches the Object File
+1. `AsmBlocks` removes the block from the source and stores its text; the statement becomes `__asm(N)`.
+2. The generator writes an ASHIR operation `asm[x...]` whose payload is the hexadecimal encoding of the text, with each variable reference rewritten as `@var:name`.
+3. The code generator decodes the payload, replaces every `@var:name` with the current location of the variable, and calls `AsmBridge.assemble(text, bits, origin)`.
+4. `shasm` assembles the text in flat mode and returns the bytes, which are copied into the function.
+
+@warning
+In `ashc` 1.0, when `shasm` cannot assemble an `asm` block (an unknown mnemonic, an invalid operand combination), the block is **silently dropped**: no bytes are emitted for it and no error is printed. A typing mistake such as `mvo rax, 1` therefore produces a program that compiles and simply does not execute that instruction. Until this is fixed, check non-trivial assembly with the stand-alone assembler ([[shasm-run]]), which does report errors, and inspect the result with `objdump`.
+@end
+
+@code asm file=check.asm
+bits 64
+    mov rax, 1
+    mvo rax, 1          ; typing mistake
+@end
+
+@session
+$ shasm --lang en -f bin -o check.bin check.asm # fails
+@end

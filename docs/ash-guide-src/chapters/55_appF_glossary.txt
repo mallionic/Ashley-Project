@@ -1,0 +1,36 @@
+@appendix{app-glossary} Glossary
+@index glossary
+@table widths=24,76 title="Glossary of terms"
+Term | Definition
+ABI | Application Binary Interface: the rules for calling functions, passing arguments, returning values and laying out data, shared by compilers so that their code can be linked together. ASH follows the System V AMD64 ABI on Linux and the Microsoft x64 ABI on Windows.
+annotation | A name preceded by `@` that configures the compiler or marks a function ([[ch-annotations]]).
+array header | The 16 bytes before the first element of an ASH array, holding its length and capacity ([[arr-layout]]).
+ASHIR | The ASH Intermediate Representation, the textual three-address code between the front end and the back end ([[ch-ashir]]).
+back end | The part of the compiler that turns ASHIR into machine code and object files.
+bounds check | The test that an array index is smaller than the length of the array, performed by `__ash_bounds`.
+callee-saved register | A register that a function must preserve for its caller (`rbx`, `rbp`, `r12`–`r15` in System V).
+crack | A named entry point declared inside a function that can be invoked with `function.crack = values;` ([[ch-cracks]]).
+directive | A line starting with `%`, evaluated before lexing ([[ch-pp]]).
+ELF | Executable and Linkable Format, the object and executable format of Linux.
+COFF | Common Object File Format, the object format used by Windows (and by UEFI tools).
+entry point | The function where a program starts, marked `@Entry`.
+flat binary | Machine code with no header, loaded at a known address ([[tgt-flat]]).
+front end | The part of the compiler that reads ASH and produces ASHIR.
+leaf function | A function that calls no other function; ASH emits it without a frame when possible.
+libc | The C standard library (glibc on Linux).
+naked function | A function without compiler-generated prologue or epilogue ([[asm-naked]]).
+nlib | The system libraries of ASH, embedded in the compiler ([[ch-nlib]]).
+override right | A signed integer that decides which of several same-named definitions survives ([[mod-override]]).
+pending return value | A result stored with `unreturnable` and returned later ([[crk-unret]]).
+Q16.16 | A fixed-point number format with 16 fraction bits ([[nlib-q16]]).
+relocation | A record in an object file telling the linker to patch an address once it is known.
+REX prefix | The x86-64 prefix byte (`40`–`4F`) that selects 64-bit operands and the registers `r8`–`r15`.
+runnable array | A global array stored in executable memory, callable as a function ([[var-runnable]]).
+runtime helper | A function added to the program by the compiler, such as `__ash_alloc` ([[ashir-runtime]]).
+shadow space | The 32 bytes the caller reserves on the stack for the callee in the Microsoft x64 convention.
+shasm | The assembler of The Ashley Project ([[ch-shasm]]).
+strict mode | A mode with additional compile-time checks ([[ch-strict]]).
+System V AMD64 | The calling convention of 64-bit Linux, BSD and macOS.
+tree shaking | The removal of imported functions that the program does not use ([[mod-shake]]).
+UEFI | Unified Extensible Firmware Interface, the firmware of modern PCs ([[tgt-uefi]]).
+@end

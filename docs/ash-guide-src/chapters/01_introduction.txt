@@ -1,0 +1,167 @@
+@chapter{ch-intro} Introduction to ASH
+@index ASH; The Ashley Project
+This manual is the programming guide and reference for **ASH**, the systems programming language of **The Ashley Project**. It describes the language itself, the `ashc` compiler that translates it, the ASHIR intermediate representation produced by the compiler, the `shasm` assembler that encodes inline assembly and stand-alone assembly files, and the `nlib` system library embedded in the compiler.
+
+The manual is written for programmers who want to understand not only *what* an ASH program does but also *how* it becomes machine code. For that reason almost every chapter shows, next to the source code, the ASHIR listing and the x86 disassembly that the compiler really produced.
+
+@section{intro-what} What ASH Is
+ASH is a compiled, statically typed, imperative language for the x86 family of processors. Its syntax is close to C: functions, blocks delimited by braces, `if`, `while`, `for`, `switch`, pointers, arrays and structures behave the way a C programmer expects. On top of that familiar base ASH adds a number of features aimed at people who write low-level software and want to stay close to the hardware:
+
+- **Assembly is part of the language.** An `asm { }` block can name ASH variables directly (`mov rax, total`), the GCC-style string form `asm volatile("...")` is accepted, raw machine bytes can be placed in the instruction stream with `emit(...)`, and a function can be declared `@naked` so that the compiler generates nothing but the bytes you write.
+- **One source, several machines.** The same compiler produces 16-bit flat binaries (boot sectors, DOS-style `.COM` images, firmware blobs), 32-bit i386 objects and executables, 64-bit ELF objects for Linux and 64-bit COFF objects for Windows. The target is chosen with `@bits(...)` in the source or with command line options.
+- **Libraries are optional.** A program can use the C library (`printf`, `malloc`, `qsort`...), or be compiled with `--no-libc`, in which case the compiler supplies a minimal runtime built on Linux system calls. The `nlib` library offers string, memory, math (including fixed-point trigonometry without an FPU) and system-call helpers that work in both modes and on bare metal.
+- **Interoperability with C is direct.** ASH functions are ordinary symbols that follow the platform calling convention; C code can call them, and ASH can call any C function declared with `extern`. Global variables declared `general` are visible to C under their own names.
+- **The compiler is transparent.** Every program can be dumped as ASHIR, a readable three-address representation, before it is turned into machine code. You can always see what the compiler did with your code.
+
+ASH is not a managed language: there is no garbage collector, no hidden runtime type information and no exceptions. Memory that is allocated is either released by the program or returned to the operating system when the process ends. What ASH does add, by default, is safety where it costs little: array accesses are bounds-checked (see [[ann-beautycode]]), arrays carry their length, and an optional strict mode ([[ch-strict]]) rejects narrowing assignments and out-of-range literals.
+
+@section{intro-hello} A First Look
+The following program prints a line through the C library and returns 0 to the operating system. It is complete: there is no header to include, no `main` prototype to repeat and no build script to write.
+
+@example run title="A complete ASH program" label=ex-hello-first
+@Entry
+pub func _start(): int64 {
+    printf("Hello from ASH!\n");
+    return 0;
+}
+@end
+
+The `@Entry` annotation marks the function where execution begins. `pub` makes the function visible outside the file. The function returns an `int64`, the return type being written after the parameter list. Everything else is what a C programmer would write.
+
+The next listing shows the same idea at the other end of the spectrum: a function whose body is a block of x86-64 assembly that reads and writes ASH variables by name. The compiler decides where `x` lives (a register or a stack slot) and substitutes the right operand into each instruction.
+
+@example run ir asm title="Assembly that names ASH variables" label=ex-asm-first
+@Entry
+pub func _start(): int64 {
+    int64 x = 40;
+    asm {
+        add x, 2
+    }
+    return x;           // exit status 42
+}
+@end
+
+The ASHIR listing shows the `asm` block kept as an opaque hexadecimal payload (`asm[x...]`); the disassembly shows the instruction `add r12, 2` that `shasm` produced after the compiler replaced the name `x` with the register that holds it. Because the variable is used inside an `asm` block, the compiler keeps it in a callee-saved register (`r12`) and the function saves and restores `r12`–`r15` around its body; [[ch-asm]] explains this in detail.
+
+@section{intro-why} Why Use ASH
+Many languages can produce native code for x86 processors. ASH was created for a specific set of needs that existing tools serve only partially.
+
+@subsection Close to the machine without leaving the language
+In C, inline assembly is a compiler extension with a complex constraint language, and its syntax differs between compilers. In ASH the assembly block is a first-class statement: you write Intel-syntax instructions, you use variable names as operands, and the compiler takes care of the rest. When even that is too much abstraction, `@naked` functions, `emit(...)` and `runnable` byte arrays give you complete control of every byte.
+
+@subsection One toolchain for every x86 mode
+Writing a boot sector, a protected-mode loader, a 64-bit kernel and a user-space tool usually means juggling an assembler, a cross compiler, a linker script and several sets of flags. `ashc` handles 16, 32 and 64-bit code from the same source language and ships with its own assembler (`shasm`), so a project that spans several processor modes can be written in one language and built with one tool.
+
+@subsection Readable output
+ASH keeps the gap between source and binary small and visible. The ASHIR representation is plain text and close to the source; the code generator maps each ASHIR operation to a short, predictable instruction sequence. This makes ASH a good language for learning how compilers and processors work, for teaching, and for situations where you must be able to explain every instruction in a binary (boot code, firmware, exploit mitigation research, reverse engineering exercises).
+
+@subsection Safety by default, control when needed
+Arrays know their length and are bounds-checked unless you turn the checks off with `@beautycode(false)` or `@bounds(false)`. Parameters cannot be modified by accident (the compiler makes a private copy when you assign to one). Global variables are constants unless declared `static`. Strict mode adds compile-time checks on literal ranges, return statements and narrowing conversions. Each of these defaults can be relaxed when performance or code size matter more than checks.
+
+@subsection Works with the code you already have
+ASH objects link with `gcc`, `ld`, `link.exe` and MinGW like any other object file. You can add an ASH module to an existing C project, call C libraries such as ALSA or the Windows API from ASH, or export ASH functions and variables to C.
+
+@section{intro-java} Why the Compiler Is Written in Java
+@index Java; GraalVM; native-image
+`ashc` and `shasm` are written in Java (about 74,000 lines across the front end, the code generators, the object file writers and the assembler) and are distributed as a self-contained native executable produced with GraalVM `native-image`. The choice of Java was deliberate; the main reasons are summarized here.
+
+@subsection Portability of the compiler itself
+The compiler must run on the same machines that its users develop on: Linux and Windows on x86-64 today, and other hosts in the future. Java code compiles once and runs unchanged on every supported host. The repository contains both `ashc` (Linux) and `ashc.exe` (Windows) built from the same sources, without conditional compilation and without a porting layer.
+
+@subsection A native executable without a runtime dependency
+A traditional objection to Java tools is start-up time and the need for an installed JVM. GraalVM `native-image` removes both: the build script (`build.sh native`) compiles the whole compiler ahead of time into a single executable that starts in milliseconds and needs no Java installation. The libraries of `nlib` and the instruction tables of `shasm` are embedded in the executable as data (`tools/EmbedNlib.java` generates `Builder/ash/NlibEmbedded.java`), so the compiler is one file that can be copied anywhere. For development, the same sources also run directly on a JVM (`java arch/Main.java ...` or the jar in `out/`).
+
+@subsection Correctness and safety of the tool
+A compiler manipulates large, irregular data structures: token lists, syntax trees, symbol tables, relocation lists. In Java an out-of-bounds index or a null reference in the compiler produces a clear exception with a stack trace (shown with `--trace`) instead of silent memory corruption. Bugs in the compiler are therefore reported as *internal errors* (in red) rather than producing a subtly broken binary.
+
+@subsection A rich standard library
+Several parts of the compiler rely directly on the Java platform: arbitrary-precision arithmetic (`java.math.BigInteger`) for constant folding of `**`, `***` and `%define` expressions without overflow, regular expressions for the ASHIR post-processing passes, `java.nio` for file handling across operating systems, and Unicode-aware string handling for escape decoding and wide (`L"..."`) strings.
+
+@subsection Fast iteration
+Java's tooling (IDEs, debuggers, profilers) and fast incremental compilation make it practical to evolve the language quickly: new statements, annotations and targets are added as small, independent passes over the syntax tree (see [[ch-arch]]).
+
+@note
+The language of the implementation has no influence on the code you write or on the code ASH generates. ASH programs do not run on a JVM and do not depend on Java in any way: they become ordinary x86 machine code.
+@end
+
+@section{intro-capable} What ASH Can Do
+The following list summarizes the capabilities of ASH 1.0. Each item is described in detail later in this manual.
+
+@table widths=26,74 title="Capabilities of ASH 1.0" label=tab-capabilities
+Area | Capability
+Targets | 64-bit ELF relocatable objects (Linux, System V ABI); 64-bit COFF objects (Windows x64 ABI); 32-bit ELF and COFF objects (i386); 32-bit Linux executables (`--exe`); 16-bit and 32-bit flat binaries (`--compile`).
+Types | Signed and unsigned integers of 8, 16, 32 and 64 bits under many names (`int64`, `uint8`, `unsigned long long`, `size_t`, ...), `bool`, `char`, `string`, raw pointers, arrays, two-dimensional arrays and matrices, C-compatible structures, function pointers.
+Control flow | `if` / `elif` / `else`, `while`, `for`, `repeat (n)`, `loop`, `switch` with fall-through, `break`, `continue`, `return`, `terminate` (leave the function from any depth) and `unreturnable` (pending return values).
+Functions | Typed parameters, any number of arguments (beyond the register arguments the stack is used), variadic functions with `va_count()` / `va_arg(i)`, function pointers and callbacks, classes with `pub` / `priv` methods, cracks (named configuration entry points inside a function).
+Low level | `asm { }` blocks, GCC-style `asm volatile("..." : outputs : inputs)`, `emit` of raw bytes and words, `@naked` functions, executable and writable `runnable` arrays, custom ELF sections with `@section`, Microsoft x64 calling convention with `@msabi` / `@efiapi`.
+Compile time | `%if` / `%ifdef` / `%define` conditional compilation with arithmetic, `define` constants, `typedef`, `redefine` aliases, user-defined annotations whose bodies are inserted into functions, override rights to choose between competing definitions.
+Libraries | `nlib`: strings and memory, integer and Q16.16 fixed-point math, Linux system calls without libc, command line arguments, delays, C `stdio` and `stdlib` declarations. Any C library through `extern`.
+Tooling | ASHIR dump, token dump, per-stage timings, colored diagnostics with tips, the stand-alone `shasm` assembler with listings, a VS Code extension with highlighting, snippets and a live linter.
+@end
+
+@section{intro-purpose} General Purpose and Design Goals
+ASH is a general-purpose systems language. It is suitable for command line tools, libraries called from C, audio and graphics experiments, operating system and boot loader development, embedded firmware images and teaching. The design is guided by a small set of goals:
+
+1. **Predictability.** A construct should translate to code whose shape the programmer can anticipate. There is no implicit heap allocation except for arrays and strings, no hidden copy constructors and no implicit virtual dispatch.
+2. **Transparency.** Every intermediate result of the compiler can be inspected: tokens (`--tokens`), ASHIR (the default output), the final machine code (with any disassembler) and timings (`--debug`).
+3. **Familiarity.** Programmers who know C should be able to read ASH immediately. Where ASH differs (return type after the parameters, `elif`, `repeat`, `loop`, `**`), the difference adds something rather than renaming something.
+4. **Reach.** The same language should be usable from the first instruction executed by a processor after reset to a user-space program that calls a C library.
+5. **Safety by default.** Checks that catch common mistakes (array bounds, constant globals, read-only parameters) are on unless explicitly turned off.
+
+@section{intro-audience} Who Should Read This Manual
+The manual assumes that you can program in at least one imperative language. Knowledge of C helps but is not required; every construct is explained from first principles. Knowledge of x86 assembly is not required for the language chapters; [[ch-x86]] introduces the processor concepts used in the rest of the book, and [[ch-shasm]] teaches the assembler syntax.
+
+- **Beginners** should start with [[ch-basics]], then follow the tour in [[ch-tour]], keep the dictionary of [[ch-dict]] at hand, and read [[ch-mastery]] for the most common mistakes.
+- **Application programmers** should read Chapters 3 to 16 (starting with the tour in [[ch-tour]]) and use the library reference in [[ch-nlib]] and the cookbook in [[ch-cookbook]].
+- **Systems programmers** (boot loaders, kernels, firmware) should add [[ch-annotations]], [[ch-asm]], [[ch-targets]] and [[ch-shasm]].
+- **Compiler and language enthusiasts** will find the internals in [[ch-arch]], [[ch-ashir]] and [[ch-codegen]].
+
+@section{intro-org} How This Manual Is Organized
+@table widths=22,78 title="Organization of this manual"
+Part | Contents
+Chapters 1–2 | Introduction to ASH, and programming basics for complete beginners (numbers, memory, compiling, the parts of a program, exercises).
+Chapters 3–5 | Installation and first programs, a guided tour of the language with every line explained, and the complete command line reference of `ashc`.
+Chapter 6 | Architecture of the compiler: every stage from source text to object file.
+Chapters 7–16 | The language: lexical structure, types, variables, expressions, control flow, functions, arrays and strings, structures and pointers, classes, cracks.
+Chapters 17–21 | Annotations, compile-time directives and macros, modules and imports, inline assembly and machine code, strict mode.
+Chapters 22–24 | Targets and calling conventions, the ASHIR intermediate representation, code generation for x86.
+Chapters 25–26 | An x86 primer for ASH programmers and the complete guide to the `shasm` assembler.
+Chapter 27 | Reference of every library and function of `nlib`, with an example and the machine code of each function.
+Chapters 28–30 | Diagnostics, tooling (VS Code, build scripts, emulators) and a cookbook of complete programs.
+Chapter 31 | Common mistakes with their corrections, techniques to master ASH, and frequently asked questions.
+Chapter 32 | The language dictionary: every keyword, operator and built-in, with an example.
+Appendices | x86 instruction reference generated from the `shasm` instruction database, register reference, grammar summary, example index, limitations, glossary, ASH for C programmers, quick reference.
+@end
+
+@section{intro-conv} Notational Conventions
+@subsection Typography
+- `Monospaced text` denotes source code, file names, command line options, ASHIR operations and machine instructions.
+- *Italic text* introduces a new term or names a placeholder that you replace with your own text, as in `import <`*name*`>;`.
+- **Bold text** marks important rules and warnings.
+
+@subsection Code listings
+Listings use colored boxes. A label in the upper right corner tells what the box contains:
+
+@table widths=26,74
+Label | Meaning
+ASH | ASH source code. Every listing labelled ASH was compiled by `ashc` during the production of this manual.
+OUTPUT | What the program printed when it was run, followed by its exit status.
+ASHIR | The intermediate representation produced by `ashc file.ash` (runtime helper routines are omitted unless they are the subject of the example).
+X86-64 DISASSEMBLY | The machine code of the object file as shown by `objdump -d -M intel`: address, encoded bytes, instruction.
+SHASM | Assembly source for the `shasm` assembler.
+SHELL | Commands typed at a shell prompt.
+COMPILER DIAGNOSTICS | Errors or warnings printed by `ashc`.
+@end
+
+@subsection Numbers and sizes
+Hexadecimal numbers are written with the prefix `0x` (as in ASH source) or, in tables of instruction encodings, as bare pairs of hexadecimal digits (`48 89 E5`). Binary numbers use the prefix `0b`. A *byte* is 8 bits, a *word* 16 bits, a *doubleword* (`dword`) 32 bits and a *quadword* (`qword`) 64 bits, following the x86 tradition that ASHIR also uses.
+
+@subsection Syntax notation
+Grammar fragments use the following notation: `[ x ]` means *x* is optional, `{ x }` means zero or more repetitions of *x*, `a | b` means either *a* or *b*, and *italic* words are non-terminals. Literal symbols are shown in monospace.
+
+@section{intro-related} Related Software and Documents
+- *System V Application Binary Interface, AMD64 Architecture Processor Supplement* — the calling convention used for 64-bit Linux targets.
+- *Microsoft x64 calling convention* — used for `--win` objects and `@msabi` / `@efiapi` functions.
+- *Intel® 64 and IA-32 Architectures Software Developer's Manual* — the authoritative description of the instructions that `shasm` encodes.
+- *Executable and Linkable Format (ELF)* and *Microsoft PE/COFF Specification* — the object formats written by `ashc`.
+- The source tree of The Ashley Project: `Builder/` (front end), `arch/` (back ends and object writers), `shasm/` (assembler), `nlib/` (libraries), `examples/`, `tests/` and `vscode-ash/`.

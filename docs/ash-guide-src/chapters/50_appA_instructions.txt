@@ -1,0 +1,17 @@
+@appendix{app-insn} x86 Instruction Reference
+@index instruction reference
+This appendix describes the x86 instructions most relevant to ASH programmers: those that the compiler generates, those used in `asm` blocks for system programming, and the most common x87 and SSE instructions. For every instruction it lists the forms that `shasm` 1.2.0 can encode, taken directly from its instruction database, and an example of each form **assembled by `shasm`** while this manual was built, with the resulting bytes.
+
+@section{insn-reading} How to Read the Tables
+@table widths=22,78 title="Columns of the instruction tables"
+Column | Meaning
+Opcode | The encoding template. Hexadecimal bytes are literal. `REX.W` is a REX prefix with W = 1 (`48` to `4F`); `66` the operand-size prefix; `/r` a ModRM byte with a register operand in `reg`; `/0`–`/7` a ModRM byte whose `reg` field is that digit (an opcode extension); `+r` the register number added to the byte; `+cc` the condition code added to the byte; `ib`, `iw`, `id`, `iq` an immediate of 1, 2, 4 or 8 bytes; `cb`, `cd` a relative displacement of 1 or 4 bytes.
+Instruction | The form in Intel notation. `r8`/`r16`/`r32`/`r64` are registers, `r/m`*N* a register or memory operand, `m`*N* memory only, `imm`*N* an immediate, `rel8`/`rel32` a jump displacement, `Sreg` a segment register, `CRn`/`DRn` control and debug registers, `xmm1` and `xmm2/m128` XMM operands, `ST(i)` an x87 register.
+64-bit | `Valid` if the form can be used in 64-bit mode, `Invalid` if it exists only in 16-bit and 32-bit modes.
+Since | The first processor or extension that provides the form. `priv` marks privileged forms (CPL 0).
+Example and encoding | An instance of the form and the bytes produced by `shasm`. The examples use `rbx` as the address register, `rcx`/`ecx`/`cx`/`cl` as register operands and `0x12`, `0x1234`, `0x12345678` as immediates; forms marked *(32-bit)* were assembled with `bits 32`.
+@end
+
+The condition codes used by `Jcc`, `SETcc` and `CMOVcc` are numbered: O = 0, NO = 1, B/C/NAE = 2, AE/NC/NB = 3, E/Z = 4, NE/NZ = 5, BE/NA = 6, A/NBE = 7, S = 8, NS = 9, P/PE = A, NP/PO = B, L/NGE = C, GE/NL = D, LE/NG = E, G/NLE = F. The examples use E (4).
+
+@gen instructions x

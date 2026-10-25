@@ -1,0 +1,87 @@
+@chapter{ch-classes} Classes and Visibility
+@index class; pub; priv; visibility
+ASH classes group related functions under a common name and control which of them can be called from outside. A class is a *namespace with access control*: it contains methods, not data, and it is never instantiated. This chapter describes class syntax, method calls, private methods, the symbols that classes produce, and the visibility rules for functions across files.
+
+@section{cls-decl} Declaring a Class
+@code text nocheck
+[pub | priv] class Name [()] {
+    [pub | priv] func method ( parameters ) [: type] { ... }
+    ...
+}
+@end
+
+The parentheses after the class name are optional. A class body contains only function declarations. A method without `pub` or `priv` is accessible to the program, like an ordinary function. A `priv` class makes all its methods private.
+
+@example run title="A class with public and private methods" label=ex-class
+class Geometry {
+    pub func area(int64 w, int64 h): int64 {
+        return w * h;
+    }
+    pub func perimeter(int64 w, int64 h): int64 {
+        return 2 * (w + h);
+    }
+    priv func scale(): int64 {
+        return 10;
+    }
+    pub func scaled_area(int64 w, int64 h): int64 {
+        return Geometry.area(w, h) * Geometry.scale();     // private: allowed here
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d %d %d\n", Geometry.area(3, 4), Geometry.perimeter(3, 4), Geometry.scaled_area(1, 2));
+    return 0;
+}
+@end
+
+@section{cls-call} Calling Methods
+A method is called with the class name, a dot and the method name: `Geometry.area(3, 4)`. Inside the class the same notation is used. There is no implicit `this` or `self`: every value a method needs is passed as a parameter.
+
+@section{cls-names} Symbols Produced by a Class
+@index name mangling
+The parser renames each method to `Class_method`. `Geometry.area` is therefore the function `Geometry_area` in ASHIR and in the object file, and C code calls it with that name. The underscore form can also be used from ASH.
+
+@example ir show=src,ir title="Methods become functions named Class_method" label=ex-class-ir
+pub class Counter {
+    pub func next(int64 n): int64 {
+        return n + 1;
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    return Counter.next(41) + Counter_next(0);
+}
+@end
+
+@section{cls-priv} Private Methods
+A `priv` method can only be called by methods of the same class. A call from anywhere else is rejected at compile time, before any code is generated:
+
+@example fail title="Calling a private method from outside its class"
+class Geometry {
+    priv func scale(): int64 {
+        return 10;
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    return Geometry.scale();
+}
+@end
+
+Private methods also cannot be exported to C with `redefine global` ([[mod-redefine]]): the compiler reports an error instead of exposing them.
+
+@section{mod-visibility} Visibility of Functions Across Files
+@index priv function
+The keywords `pub` and `priv` apply to ordinary functions as well:
+
+@table widths=18,82 title="Visibility of functions" label=tab-func-visibility
+Keyword | Effect
+`pub` | Global symbol in the object file. Callable from C, from other objects and from every ASH file of the program. Required for the entry point and for exported functions.
+(none) | Callable from every ASH file of the program; a local symbol in the object file.
+`priv` | Callable only from the file that defines it. A call from a file that imports it is a compile-time error.
+@end
+
+Classes and override rights ([[mod-override]]) combine: a class can be given a right with `@ovr[N]` before `class`, and the right applies to all its methods.

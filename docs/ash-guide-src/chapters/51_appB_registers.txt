@@ -1,0 +1,5 @@
+@appendix{app-regs} Register Reference
+@index registers
+This appendix lists every register name known to `shasm`, with the number used in instruction encodings (the value of the `reg`, `r/m` or `+r` field, extended by REX bits for 8 to 15 and by the APX extension for 16 to 31). Register names can be used in `asm` blocks and `shasm` sources, in any letter case. The 64-bit, 32-bit and 16-bit tables include the registers 16–31 of the APX extension, which `shasm` 1.2.0 recognizes as names but does not encode.
+
+@gen registers x

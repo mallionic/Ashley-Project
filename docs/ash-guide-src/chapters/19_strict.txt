@@ -1,0 +1,112 @@
+@chapter{ch-strict} Strict Mode
+@index strict mode; use strict
+Strict mode adds compile-time checks that catch mistakes the normal rules allow: literals that do not fit in their variable, silent narrowing of wide values, and `return` statements that do not match the function's return type. It changes no code generation; a program that compiles in strict mode behaves exactly as it would without it.
+
+@section{strict-enable} Enabling Strict Mode
+Strict mode is enabled for a whole file by one of:
+
+@code text nocheck
+"use strict";          // first item of the file
+@strict                // anywhere at top level
+@strict(true)
+@end
+
+`@strict(false)` disables it again. The declaration applies to the file being compiled.
+
+@section{strict-rules} The Rules
+@table widths=30,70 title="Checks performed in strict mode" label=tab-strict-rules
+Rule | Description
+Literal range | A literal assigned or used to initialize a variable must fit in the variable's type: 0 to 2^N-1 for unsigned types, -2^(N-1) to 2^(N-1)-1 for signed types. Outside strict mode only the combined range -2^(N-1) to 2^N-1 is enforced, so `uint8 x = -1` is accepted there.
+No implicit narrowing | Assigning an expression whose widest non-literal operand has more bits than the destination is rejected. Use an explicit cast to show that the narrowing is intended.
+`void` functions | `return value;` in a function declared `void` is an error.
+Non-`void` functions | `return;` without a value in a function with a return type is an error (outside strict mode it returns the pending `unreturnable` value or 0).
+@end
+
+The width of an expression is computed from its operands: the width of the widest variable that appears in it, ignoring literals; comparisons have no width; a shift has the width of its left operand; casts and function calls are considered explicit and are accepted.
+
+@section{strict-examples} Examples
+@example run title="A program that satisfies strict mode" label=ex-strict-ok
+"use strict";
+
+func sum(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+func greet(): void {
+    printf("hello from void\n");
+    return;
+}
+
+@Entry
+pub func main(): int64 {
+    uint8 small = 255;                               // fits in uint8
+    int8 negative = -128;                            // fits in int8
+    uint64 big = 18446744073709551615ULL;
+    int64 total = sum(40, 2);
+    uint32 low = (uint32)(big & 0xFFFFFFFF);         // explicit cast: allowed
+    greet();
+    printf("small=%u total=%lld low=%u negative=%d\n", small, total, low, negative);
+    return 0;
+}
+@end
+
+@example fail title="An unsigned variable cannot hold a negative literal" translate="error: strict: the value -1 does not fit in 'a' (uint32, range 0 .. 4294967295)\n1 error generated."
+@strict
+@Entry
+pub func main(): int64 {
+    uint32 a = -1;
+    return 0;
+}
+@end
+
+@example fail title="A literal larger than the type" translate="error: strict: the value 256 does not fit in 'a' (uint8, range 0 .. 255)\n1 error generated."
+@strict(true)
+@Entry
+pub func main(): int64 {
+    uint8 a = 256;
+    return 0;
+}
+@end
+
+@example fail title="Implicit narrowing is rejected" translate="error: strict: cannot assign a 64-bit value to 'small' (uint32, 32 bits); use an explicit cast\n1 error generated."
+"use strict";
+@Entry
+pub func main(): int64 {
+    uint64 big = 5;
+    uint32 small = big;
+    return 0;
+}
+@end
+
+@example fail title="A void function cannot return a value" translate="error: strict: the function 'f' is void and cannot return a value\n1 error generated."
+"use strict";
+func f(): void {
+    return 5;
+}
+
+@Entry
+pub func main(): int64 {
+    f();
+    return 0;
+}
+@end
+
+@example fail title="A function with a result needs a value in return" translate="error: strict: the function 'g' returns qword and 'return;' needs a value\n1 error generated."
+"use strict";
+func g(): int64 {
+    return;
+}
+
+@Entry
+pub func main(): int64 {
+    g();
+    return 0;
+}
+@end
+
+@section{strict-when} When to Use Strict Mode
+Strict mode is recommended for new code, for libraries and for code that manipulates data of several widths (protocol headers, pixel formats, hardware registers), where an unnoticed truncation is a real bug. It is less useful for small experiments and for code that intentionally relies on wrap-around; there, the explicit casts it requires may add noise.
+
+@tip
+The VS Code linter performs most of these checks while you type, in strict and non-strict files alike, and reports them as warnings ([[tool-vscode]]).
+@end

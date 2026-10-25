@@ -1,0 +1,162 @@
+@chapter{ch-x86} An x86 Primer for ASH Programmers
+@index x86; registers; instruction encoding
+This chapter introduces the parts of the x86 architecture that appear throughout this manual: operating modes, registers, flags, memory addressing, the stack and the encoding of instructions. It is not a replacement for the processor manuals, but it gives enough background to read the disassembly of ASH programs and to write `asm` blocks and `shasm` sources. Every encoding shown here was produced by `shasm`.
+
+@section{x86-modes} Operating Modes
+@table widths=24,16,60 title="Processor modes targeted by ASH" label=tab-x86-modes
+Mode | ASH | Characteristics
+Real mode | `@bits(16)` | The mode of the processor after reset and of DOS. 16-bit registers and offsets, 1 MiB of address space through segment:offset pairs, BIOS services through `int`.
+Protected mode | `@bits(32)` | 32-bit registers and flat 4 GiB address space, paging, privilege levels. Used by 32-bit operating systems and programs.
+Long mode (64-bit) | `@bits(64)` | 64-bit registers, sixteen general-purpose registers, RIP-relative addressing, canonical 48-bit (or 57-bit) virtual addresses. Used by 64-bit operating systems.
+@end
+
+The same instruction bytes may mean different things in different modes; the assembler must know the mode (`bits 16`, `bits 32`, `bits 64` in `shasm`, `@bits(...)` in ASH) to encode instructions correctly.
+
+@section{x86-regs} General-Purpose Registers
+In 64-bit mode there are sixteen 64-bit general-purpose registers. Each one can also be accessed as a 32-bit, 16-bit and 8-bit register. Writing a 32-bit register clears the upper 32 bits of the 64-bit register; writing an 8-bit or 16-bit register leaves the other bits unchanged.
+
+@table widths=14,14,14,14,44 title="General-purpose registers" label=tab-gpr
+64-bit | 32-bit | 16-bit | 8-bit | Conventional role (System V)
+`rax` | `eax` | `ax` | `al` (`ah`) | Return value, accumulator
+`rbx` | `ebx` | `bx` | `bl` (`bh`) | Callee-saved
+`rcx` | `ecx` | `cx` | `cl` (`ch`) | 4th argument; shift count
+`rdx` | `edx` | `dx` | `dl` (`dh`) | 3rd argument; high half of mul/div
+`rsi` | `esi` | `si` | `sil` | 2nd argument; string source
+`rdi` | `edi` | `di` | `dil` | 1st argument; string destination
+`rbp` | `ebp` | `bp` | `bpl` | Frame pointer, callee-saved
+`rsp` | `esp` | `sp` | `spl` | Stack pointer
+`r8` | `r8d` | `r8w` | `r8b` | 5th argument
+`r9` | `r9d` | `r9w` | `r9b` | 6th argument
+`r10`, `r11` | `r10d`, `r11d` | `r10w`, `r11w` | `r10b`, `r11b` | Scratch (caller-saved)
+`r12`–`r15` | `r12d`–`r15d` | `r12w`–`r15w` | `r12b`–`r15b` | Callee-saved
+@end
+
+In 32-bit mode only the eight registers `eax` to `edi` exist; in 16-bit mode the eight 16-bit registers `ax` to `di`. The *segment registers* `cs`, `ds`, `es`, `fs`, `gs` and `ss` select memory segments in real and protected mode; in 64-bit mode only `fs` and `gs` keep a base address (used for thread-local storage). Appendix [[app-regs]] lists every register known to `shasm`.
+
+@subsection Other registers
+- `rip` / `eip` / `ip`: the instruction pointer, the address of the next instruction.
+- `rflags`: the flags register.
+- `cr0`, `cr2`, `cr3`, `cr4`, `cr8`: control registers (paging, protection, interrupt priority). Accessible only at privilege level 0.
+- `dr0`–`dr7`: debug registers.
+- `xmm0`–`xmm15` (and `ymm`, `zmm` with AVX): vector registers, also used for floating point.
+- `st0`–`st7`, `mm0`–`mm7`: the x87 floating-point stack and the MMX registers.
+
+@section{x86-flags} Flags
+Arithmetic and logical instructions set *status flags* in `rflags`, which conditional jumps (`jcc`), conditional moves (`cmovcc`) and `setcc` test.
+
+@table widths=14,18,68 title="Status flags" label=tab-flags
+Flag | Name | Set when
+`CF` | Carry | An unsigned operation produced a carry out of, or a borrow into, the most significant bit.
+`ZF` | Zero | The result is zero.
+`SF` | Sign | The most significant bit of the result is 1.
+`OF` | Overflow | A signed operation produced a result that does not fit.
+`PF` | Parity | The low byte of the result has an even number of 1 bits.
+`AF` | Adjust | A carry out of bit 3 (used by BCD arithmetic).
+@end
+
+`cmp a, b` computes `a - b`, discards the result and sets the flags. Signed comparisons then use `jl`, `jle`, `jg`, `jge` (which test `SF`, `OF` and `ZF`); unsigned comparisons use `jb`, `jbe`, `ja`, `jae` (which test `CF` and `ZF`). This is why ASH must know the signedness of the operands of a comparison ([[tab-signed-ops]]).
+
+@section{x86-memory} Memory Operands
+An instruction operand in memory is written between brackets. Its *effective address* is computed as:
+
+@code text nocheck
+[ base + index * scale + displacement ]
+@end
+
+where *base* and *index* are registers, *scale* is 1, 2, 4 or 8, and *displacement* is a signed 8-bit or 32-bit constant. Any part may be omitted. In 64-bit mode an address may also be relative to the instruction pointer, `[rip + displacement]`, which is how position-independent code reaches its data. The size of the memory operand is given by the other operand or by a size keyword: `byte`, `word`, `dword`, `qword`.
+
+@asmexample bits=64 title="Addressing forms and their encodings" label=ex-x86-addr
+bits 64
+    mov rax, [rbx]                 ; base
+    mov rax, [rbx + 8]             ; base + disp8
+    mov rax, [rbx + 0x1000]        ; base + disp32
+    mov rax, [rbx + rcx*8]         ; base + index*scale
+    mov rax, [rbx + rcx*8 + 16]    ; everything
+    mov eax, [rsp + 4]             ; rsp as base needs a SIB byte
+    mov byte [rdi], 0x41           ; size from the keyword
+    mov qword [rbp - 8], 0         ; frame slot
+    lea rax, [rel data]            ; RIP-relative address
+    lea rcx, [rax + rax*4]         ; arithmetic with lea: rcx = rax * 5
+data:
+    dq 0
+@end
+
+@section{x86-stack} The Stack
+The stack grows towards lower addresses. `push x` decrements `rsp` by 8 and stores `x` at `[rsp]`; `pop x` loads from `[rsp]` and increments `rsp`. `call f` pushes the address of the next instruction and jumps to `f`; `ret` pops that address and jumps to it. The System V ABI requires `rsp` to be a multiple of 16 just before a `call`, which is why ASH functions reserve frame sizes in multiples of 16 and why `_start` aligns the stack explicitly ([[cg-frames]]).
+
+@code text nocheck
+         higher addresses
+   +------------------------+
+   | argument 8             |  [rbp+24]
+   | argument 7             |  [rbp+16]
+   | return address         |  [rbp+8]   pushed by call
+   | saved rbp              |  [rbp]     pushed by the prologue
+   | saved r12              |  [rbp-8]
+   | ...                    |
+   | locals, temporaries    |
+   +------------------------+  <- rsp (16-byte aligned before calls)
+         lower addresses
+@end
+
+@section{x86-encoding} Instruction Encoding
+@index encoding; REX; ModRM; SIB; opcode
+An x86 instruction is a sequence of 1 to 15 bytes with the following structure; every part except the opcode is optional:
+
+@table widths=22,14,64 title="Parts of an x86 instruction" label=tab-encoding-parts
+Part | Size | Purpose
+Legacy prefixes | 0–4 | `66` operand size, `67` address size, `F0` lock, `F2`/`F3` repeat or mandatory prefix, segment overrides.
+REX prefix | 0–1 | 64-bit mode only: `0100WRXB`. `W` selects 64-bit operand size, `R`, `X`, `B` extend the register fields to reach `r8`–`r15`.
+Opcode | 1–3 | The operation: one byte, or `0F xx`, `0F 38 xx`, `0F 3A xx`.
+ModRM | 0–1 | `mod` (2 bits): addressing mode; `reg` (3 bits): a register or an opcode extension (`/digit`); `r/m` (3 bits): a register or a memory form.
+SIB | 0–1 | `scale` (2), `index` (3), `base` (3), for `[base + index*scale]`.
+Displacement | 0, 1, 2, 4 | Signed offset of a memory operand.
+Immediate | 0, 1, 2, 4, 8 | Constant operand.
+@end
+
+The following listing shows how the same operation is encoded with different operand sizes and registers. Observe the `66` prefix for 16-bit operands, the `REX.W` prefix (`48`) for 64-bit operands, and the `REX.B` / `REX.R` bits (`41`, `44`, `4C`, `49`) needed to reach `r8`–`r15`:
+
+@asmexample bits=64 title="Operand size and register extension in the encoding" label=ex-x86-enc
+bits 64
+    add al, bl           ; 8-bit
+    add ax, bx           ; 16-bit: 66 prefix
+    add eax, ebx         ; 32-bit: no prefix
+    add rax, rbx         ; 64-bit: REX.W
+    add r8, rbx          ; REX.W + REX.B
+    add rax, r9          ; REX.W + REX.R
+    add r12, r13         ; REX.W + REX.R + REX.B
+    add eax, 1           ; imm8, sign-extended (83 /0 ib)
+    add eax, 1000        ; imm32 (05 id: short form for eax)
+    add ecx, 1000        ; imm32 (81 /0 id)
+@end
+
+@subsection Reading a ModRM byte
+Take `add rax, rbx`, encoded `48 01 D8`. `48` is REX with `W=1` (64-bit operands). `01` is the opcode *ADD r/m64, r64*. `D8` = `11 011 000` in binary: `mod = 11` (register operand), `reg = 011` (`rbx`, the source), `r/m = 000` (`rax`, the destination). The same opcode with a memory operand, `add [rax], rbx`, has `mod = 00` and encodes as `48 01 18`.
+
+@section{x86-instr} Instructions Used by ASH
+The code generator of ASH uses a small subset of the instruction set. Knowing these instructions is enough to read any compiled ASH function:
+
+@table widths=24,76 title="Instructions found in compiled ASH code" label=tab-ash-insns
+Instruction | Use in compiled code
+`mov`, `movzx`, `movsx`, `movsxd` | Moves between homes, loads, stores, widening.
+`lea` | Addresses of globals, strings and frame slots.
+`add`, `sub`, `imul`, `and`, `or`, `xor` | Arithmetic and bitwise operators.
+`cqo` + `idiv`, `xor edx, edx` + `div` | Division and remainder.
+`shl`, `sar`, `shr` | Shifts by constants.
+`cmp`, `jcc`, `jmp` | Conditions and loops.
+`call`, `ret`, `push`, `pop`, `leave` | Calls, prologues and epilogues.
+`and rsp, -16` | Stack alignment at `_start`.
+`syscall`, `int 0x80` | System calls (in the runtime and libraries).
+@end
+
+Appendix [[app-insn]] describes these and many more instructions with all the forms that `shasm` accepts.
+
+@section{x86-callconv} Calling Conventions at a Glance
+@table widths=22,26,26,26 title="Calling conventions" label=tab-callconv-glance
+Aspect | System V x86-64 | Microsoft x64 | cdecl (i386)
+Integer arguments | `rdi rsi rdx rcx r8 r9`, then stack | `rcx rdx r8 r9`, then stack | stack, right to left
+Return value | `rax` (`rdx:rax`) | `rax` | `eax` (`edx:eax`)
+Callee-saved | `rbx rbp r12-r15` | `rbx rbp rdi rsi r12-r15` | `ebx esi edi ebp`
+Stack cleanup | caller | caller | caller
+Shadow space | none | 32 bytes | none
+Stack alignment | 16 bytes at call | 16 bytes at call | 4 (16 on Linux)
+@end

@@ -1,0 +1,117 @@
+@appendix{app-quickref} Quick Reference
+@index quick reference
+A compact summary of the language, the command line and the libraries, for use while programming.
+
+@section{qr-program} Program Skeletons
+@code ash top
+// A program that uses the C library
+@Entry
+pub func main(int64 argc, int64 argv): int64 {
+    printf("hello\n");
+    return 0;
+}
+@end
+
+@code ash nocheck
+// A program without the C library:  ashc p.ash --elf --no-libc ; ld -e _start out/p.o -o p
+import <syscalls>;
+
+@Entry
+pub func _start(): int64 {
+    println("hello");
+    sys_exit(0);
+    return 0;
+}
+@end
+
+@code ash nocheck
+// A 16-bit flat image:  ashc p.ash --compile
+@bits(16)
+@originoffs(0x100)
+
+@Entry
+pub func _start(): int16 {
+    return 42;
+}
+@end
+
+@section{qr-decl} Declarations
+@table widths=40,60 title="Declarations at a glance"
+Form | Meaning
+`int64 x = 5;` | Local variable.
+`uint8[16] buf;` / `int64[] v = {1, 2};` | Arrays.
+`int64[3][4] m;` / `matrix m[] []{ [int32 1], [int32 2], }` | Two-dimensional arrays.
+`T* p = &x;` | Pointer.
+`general static int64 g = 0` / `ungeneral int32 K = 7` | Globals (public / private; `static` = writable).
+`runnable byte[] code = {0xC3}` | Executable array.
+`typedef uint32 u32;` / `define N 10;` / `macro M { ... }` | Aliases and macros.
+`struct S { int32 a; };` / `typedef struct { ... } S;` | Structures.
+`extern int64 f(int64 x);` | External function.
+`import <string>;` / `import "lib.ash";` | Imports.
+`[pub|priv] func f(T a, ...): R { }` | Function (variadic with `...`).
+`class C { pub func m() { } }` | Class; call `C.m()`.
+`name -> (T p) { ... };` + `f.name = v;` | Crack.
+@end
+
+@section{qr-statements} Statements
+@table widths=40,60 title="Statements at a glance"
+Form | Meaning
+`if (c) { } elif (c) { } else { }` | Conditional.
+`while (c) { }` / `for (init; c; step) { }` | Loops.
+`repeat (n) { }` / `loop { }` | Counted / infinite loops.
+`switch (e) { case 1: ... break; default: ... }` | Multi-way branch (falls through).
+`break;` `continue;` | Leave / restart a loop.
+`return e;` `terminate e;` `terminate;` | Leave the function.
+`unreturnable e;` | Set the pending result and continue.
+`asm { ... }` / `asm volatile("... {x} ...");` | Inline assembly.
+`emit(0x90);` `emit16(..)` `emit32(..)` `emit64(..)` | Raw machine bytes.
+@end
+
+@section{qr-operators} Operators
+@table widths=30,70 title="Operators from highest to lowest precedence"
+Operators | Notes
+`() [] . -> x++ x--` | Postfix.
+`++x --x - + ~ & * # (T)` | Unary, right to left.
+`** ***` | Power and repeated squaring, right to left.
+`* / %` | Multiplicative.
+`+ -` | Additive.
+`<< >>` | Shifts.
+`== != < <= > >=` | Comparisons (conditions only).
+`&`, then `^`, then `|` | Bitwise.
+`!` `&&` `||` | Logical (conditions only).
+@end
+
+@section{qr-annotations} Annotations
+@table widths=40,60 title="Annotations at a glance"
+Annotation | Meaning
+`@Entry` | Program entry point.
+`@bits(16|32|64)`, `@originoffs(a)` | Target mode, load address.
+`@beautycode(b)`, `@bounds(b)`, `@strict`, `@nolibc` | Code style, bounds checks, strict mode, no libc.
+`@naked`, `@msabi` / `@efiapi` | No prologue; Microsoft convention.
+`@section(".x", "flags")`, `@attribute(section(".x"))` | Section placement.
+`@ovr[N]` / `@override` | Override right.
+`@Name(T p) { ... }` | User-defined annotation.
+@end
+
+@section{qr-cli} Command Line
+@table widths=40,60 title="ashc options at a glance"
+Command | Result
+`ashc p.ash` | `p.ashir`
+`ashc p.ash --elf` / `--win` | `out/p.o` / `out/p.obj`
+`ashc p.ash --compile` / `--exe` | `out/p.bin` / `out/p` (32-bit)
+`--bits N`, `--no-libc`, `-e` | Width, no libc, frames everywhere.
+`-o file`, `-o dir/`, `--outdir dir`, `--stdout` | Output location.
+`-s`, `--msg fmt`, `--tokens`, `--debug`, `--trace` | Messages and debugging.
+`--list-nlib`, `--version`, `--license`, `--help` | Information.
+@end
+
+@section{qr-nlib} Library Functions
+@table widths=18,82 title="nlib functions at a glance"
+Library | Functions
+`<string>` | `memset memcpy memmove memcmp memchr strlen strnlen strcpy strncpy strcat strncat strcmp strncmp strcasecmp strchr strrchr strstr strspn strcspn isdigit isupper islower isalpha isalnum isspace isxdigit toupper tolower str_to_int atoi uint_to_str int_to_str str_reverse str_upper str_lower str_equals str_starts str_ends`
+`<math>` | `abs min max clamp sign gcd lcm ipow isqrt ilog2 ilog10 factorial is_prime mod_pow div_floor mod_floor is_pow2 next_pow2 popcount align_up align_down fx fx_int fx_round fx_frac fx_abs fx_mul fx_div fx_sqrt fx_deg fx_sin fx_cos fx_tan fx_print_buf`
+`<syscalls>` | `syscall6 sys_read sys_write sys_open sys_close sys_lseek sys_mmap sys_munmap sys_brk sys_getpid sys_kill sys_mkdir sys_unlink sys_nanosleep sys_exit print println print_int`
+`<args>` | `arg_at arg_equals arg_int arg_has`
+`<delay>` | `delay delayus`
+`<types>` | `inf ninf pos_inf neg_inf float_nan float_inf float_ninf double_nan double_inf double_ninf nan`
+@end

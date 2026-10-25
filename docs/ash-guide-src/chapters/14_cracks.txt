@@ -1,0 +1,144 @@
+@chapter{ch-cracks} Cracks and Pending Return Values
+@index crack; unreturnable
+Cracks and pending return values are two features specific to ASH. A *crack* is a named entry point declared inside a function that lets other code configure that function's behavior. A *pending return value*, set with `unreturnable`, gives a function a result without stopping it. This chapter describes both, and how they are compiled.
+
+@section{crk-crack} Cracks
+@subsection Declaring a crack
+A crack is declared inside the body of a function:
+
+@code text nocheck
+name -> ( [type param, ...] ) { statements };
+@end
+
+The statements of a crack do not run when the function runs. They run when another part of the program *invokes* the crack with an assignment-like statement:
+
+@code text nocheck
+function.name = value [, value]... ;
+@end
+
+The values are passed to the parameters of the crack, in order. A crack can be invoked any number of times, before or after the function itself is called.
+
+@example run title="A crack that configures a logger" label=ex-crack
+general static int64 level = 0
+
+func logger(string msg): void {
+    verbosity -> (int64 v) {
+        level = v
+    };
+    if (level > 1) {
+        printf("[log] %s\n", msg);
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    logger("this message is hidden");
+    logger.verbosity = 2;              // runs the crack: level = 2
+    logger("this message is shown");
+    printf("level=%d\n", level);
+    return 0;
+}
+@end
+
+@subsection How cracks are compiled
+Each crack becomes an independent function named `__crack_<function>_<crack>` with the crack's parameters, and each invocation `f.c = a, b;` becomes a call `__crack_f_c(a, b);`. The enclosing function itself is not modified.
+
+@example ir show=src,ir title="The function generated for a crack" label=ex-crack-ir
+general static int64 limit = 10
+
+func worker(): int64 {
+    set_limit -> (int64 n) {
+        limit = n
+    };
+    return limit;
+}
+
+@Entry
+pub func main(): int64 {
+    worker.set_limit = 42;
+    return worker();
+}
+@end
+
+@important
+Because a crack is a separate function, it **cannot see the local variables or parameters of the function in which it is written**. A crack communicates with its function through global variables (declared `static`) or through `unreturnable`. Assigning to a name that looks like a local of the enclosing function creates a local of the crack instead, and has no visible effect.
+@end
+
+@subsection When to use cracks
+Cracks keep the configuration of a function next to the function. Typical uses are verbosity levels, modes of operation, callbacks and test hooks: the code that configures and the code that is configured are written in one place, while callers use a short, explicit syntax (`logger.verbosity = 2;`).
+
+@section{crk-unret} Pending Return Values
+@index unreturnable; pending return
+`unreturnable expression;` stores a *pending return value* for the current function **without leaving it**. The function continues to run. When it later ends without an explicit value (`return;`, `terminate;`, or reaching the closing brace), it returns the pending value. An explicit `return value;` overrides the pending value.
+
+@table widths=34,66 title="How a function ends with a pending value" label=tab-unret
+Ending | Result
+`return value;` | `value` (the pending value is ignored)
+`return;` | The pending value, or 0 if none was set
+`terminate;` | The pending value, or 0
+`terminate value;` | `value`
+End of the body | The pending value
+@end
+
+@example run title="unreturnable sets a result and keeps running" label=ex-unret
+general static uint64 counter = 0
+
+func measure(): uint64 {
+    unreturnable 5;            // the result is 5 ...
+    counter = counter + 1;     // ... but the function keeps running
+}
+
+func pending_then_stop(): int64 {
+    unreturnable 7;
+    int64 k = 0;
+    while (k < 100) {
+        k++;
+        if (k == 3) {
+            terminate;         // returns the pending 7
+        }
+    }
+    return 1;
+}
+
+func explicit_wins(): int64 {
+    unreturnable 7;
+    return 9;                  // an explicit value wins
+}
+
+@Entry
+pub func main(): int64 {
+    printf("measure=%llu counter=%llu\n", measure(), counter);
+    printf("pending_then_stop=%d explicit_wins=%d\n", pending_then_stop(), explicit_wins());
+    return 0;
+}
+@end
+
+@subsection{crk-unret-impl} How pending values are compiled
+For every function that uses `unreturnable`, the compiler creates a private global `__ret_<function>`. `unreturnable e;` stores `e` into it, and `return;` / `terminate;` become `return __ret_<function>;`. Because the pending value is a global, a crack of the function can also set it, which lets a crack choose the value its function will return:
+
+@example run title="A crack that chooses its function's result" label=ex-crack-unret
+general static uint64 value = 10
+
+func greeting(): string {
+    name -> (uint64 num, string text) {
+        value = num
+        unreturnable text
+    };
+    return;                     // returns whatever the crack left pending
+}
+
+@Entry
+pub func main(): int64 {
+    greeting.name = 7, "Hello, crack";
+    printf("greeting()=%s value=%llu\n", greeting(), value);
+    return 0;
+}
+@end
+
+@note
+`unreturnable` may also be written `unreturn`. The form `unreturnable` *type*`;` (for example `unreturnable int64;`) only declares the type of the pending value and stores nothing.
+@end
+
+@warning
+The pending value is stored in a global, so it persists between calls: a function that sets it in one call and ends with `return;` in a later call returns the old value. Set the pending value on every path that relies on it.
+@end

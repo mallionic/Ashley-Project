@@ -1,0 +1,409 @@
+@chapter{ch-tour} A Tour of ASH
+@index tutorial; tour
+This chapter is a guided tour of the language for readers who learn best by example. It introduces one idea at a time, each with a complete program that you can type, compile and run. The later chapters describe every feature exhaustively; here the aim is to become productive quickly. All programs in this chapter are compiled and linked as shown in [[start-first]]: `ashc prog.ash --elf` followed by `gcc out/prog.o -o prog`.
+
+@section{tour-values} Values and Variables
+A variable is declared with its type, its name and, usually, an initial value. `int64` is the natural integer type on 64-bit machines; `printf` prints values with the familiar C format codes.
+
+@example run title="Variables and arithmetic"
+@Entry
+pub func main(): int64 {
+    int64 apples = 12;
+    int64 friends = 5;
+    int64 each = apples / friends;
+    int64 left = apples % friends;
+    printf("%d apples, %d friends: %d each, %d left over\n", apples, friends, each, left);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: variables and arithmetic"
+Code | What it does
+`@Entry` | Marks `main` as the function where the program starts.
+`pub func main(): int64 {` | Begins the function `main`; it returns a 64-bit integer to the operating system.
+`int64 apples = 12;` | Creates a variable called `apples`, of type `int64` (a whole number), holding 12.
+`int64 friends = 5;` | A second variable holding 5.
+`int64 each = apples / friends;` | Divides 12 by 5. Whole-number division drops the fraction, so `each` is 2.
+`int64 left = apples % friends;` | `%` gives the remainder of the division: 12 = 5 * 2 + 2, so `left` is 2.
+`printf("%d apples, ...", apples, ...);` | Prints the text; each `%d` is replaced by the next value in the list, in order. `\n` ends the line.
+`return 0;` | Tells the operating system that everything went well.
+`}` | Ends the function.
+@end
+
+Types can be narrower than 64 bits and can be unsigned. A value that does not fit wraps around:
+
+@example run title="Narrow and unsigned types"
+@Entry
+pub func main(): int64 {
+    uint8 level = 250;
+    level = level + 10;          // 260 does not fit in 8 bits: 4
+    int16 temperature = -40;
+    uint32 big = 4000000000;
+    printf("level=%d temperature=%d big=%u\n", level, temperature, big);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: narrow and unsigned types"
+Code | What it does
+`uint8 level = 250;` | `uint8` is an unsigned number of 8 bits: it can hold 0 to 255.
+`level = level + 10;` | 250 + 10 = 260 does not fit in 8 bits; only the low 8 bits are kept, which is 4.
+`int16 temperature = -40;` | `int16` is a signed 16-bit number (-32768 to 32767), so negative values are fine.
+`uint32 big = 4000000000;` | `uint32` holds 0 to about 4.29 billion.
+`printf("... big=%u\n", ...)` | `%u` prints an unsigned value.
+@end
+
+@section{tour-decisions} Making Decisions
+`if`, `elif` and `else` choose between blocks. Braces are always required. Conditions can combine comparisons with `&&` (and), `||` (or) and `!` (not).
+
+@example run title="if, elif and else"
+func describe(int64 age): void {
+    if (age < 0) {
+        printf("%d: invalid\n", age);
+    } elif (age < 13) {
+        printf("%d: child\n", age);
+    } elif (age < 20) {
+        printf("%d: teenager\n", age);
+    } else {
+        printf("%d: adult\n", age);
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    describe(-1);
+    describe(8);
+    describe(15);
+    describe(42);
+    int64 year = 2024;
+    if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
+        printf("%d is a leap year\n", year);
+    }
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: if, elif and else"
+Code | What it does
+`func describe(int64 age): void {` | A function that receives one number and returns nothing (`void`).
+`if (age < 0) { ... }` | Runs the block only when `age` is less than 0.
+`} elif (age < 13) {` | Otherwise, if `age` is less than 13, runs this block.
+`} else {` | When none of the conditions above was true, runs this block.
+`describe(-1);` ... `describe(42);` | Calls the function four times with different values.
+`year % 4 == 0 && year % 100 != 0` | "divisible by 4 **and** not divisible by 100".
+`... || year % 400 == 0` | "**or** divisible by 400". The parentheses group the first part.
+@end
+
+@section{tour-loops} Repeating Things
+ASH has the `while` and `for` loops of C, plus two of its own: `repeat (n)` runs a block a fixed number of times, and `loop` runs forever until `break`.
+
+@example run title="Four kinds of loops"
+@Entry
+pub func main(): int64 {
+    int64 n = 1;
+    while (n < 100) {
+        n = n * 2;
+    }
+    printf("first power of two >= 100: %d\n", n);
+
+    int64 sum = 0;
+    for (int64 i = 1; i <= 100; i++) {
+        sum += i;
+    }
+    printf("1 + 2 + ... + 100 = %d\n", sum);
+
+    repeat (3) {
+        printf("hip ");
+    }
+    printf("hooray!\n");
+
+    int64 guess = 0;
+    loop {
+        guess++;
+        if (guess * guess > 50) { break; }
+    }
+    printf("smallest number whose square exceeds 50: %d\n", guess);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: loops"
+Code | What it does
+`while (n < 100) { n = n * 2; }` | Doubles `n` as long as it is below 100: 1, 2, 4, ..., 128.
+`for (int64 i = 1; i <= 100; i++) {` | Starts `i` at 1; repeats while `i <= 100`; adds 1 to `i` after each repetition.
+`sum += i;` | Short for `sum = sum + i`.
+`repeat (3) { printf("hip "); }` | Runs the block exactly three times.
+`loop { ... }` | Repeats forever...
+`if (guess * guess > 50) { break; }` | ...until `break` leaves the loop.
+@end
+
+@section{tour-functions} Functions
+A function lists its parameters with their types, and gives its result type after a colon. Functions can be used before they are defined, and they can call themselves.
+
+@example run title="Writing functions"
+func square(int64 x): int64 {
+    return x * x;
+}
+
+func power(int64 base, int64 exp): int64 {
+    int64 result = 1;
+    repeat (exp) {
+        result = result * base;
+    }
+    return result;
+}
+
+func fib(int64 n): int64 {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+@Entry
+pub func main(): int64 {
+    printf("square(9)=%d power(2, 10)=%d fib(25)=%d\n", square(9), power(2, 10), fib(25));
+    printf("and ASH has a power operator too: 2 ** 10 = %d\n", 2 ** 10);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: functions"
+Code | What it does
+`func square(int64 x): int64 {` | A function named `square` with one parameter `x`; it returns an `int64`.
+`return x * x;` | Gives back `x` times `x`.
+`func power(int64 base, int64 exp): int64 {` | A function with two parameters.
+`repeat (exp) { result = result * base; }` | Multiplies `result` by `base`, `exp` times.
+`if (n < 2) { return n; }` | In `fib`, the simplest cases: fib(0) = 0, fib(1) = 1.
+`return fib(n - 1) + fib(n - 2);` | Otherwise the function calls itself twice (*recursion*).
+`2 ** 10` | ASH's power operator, computed by the compiler.
+@end
+
+@section{tour-arrays} Arrays
+An array holds several values of one type. Arrays know their length, which the `#` operator returns, and every index is checked: an index out of range stops the program instead of corrupting memory.
+
+@example run title="Working with an array"
+@Entry
+pub func main(): int64 {
+    int64[] scores = {72, 91, 58, 85, 99, 64};
+    int64 best = scores[0];
+    int64 total = 0;
+    for (int64 i = 0; i < #scores; i++) {
+        total = total + scores[i];
+        if (scores[i] > best) { best = scores[i]; }
+    }
+    printf("%d scores, best %d, average %d\n", #scores, best, total / #scores);
+
+    int64[10] squares;                     // ten zeros
+    for (int64 i = 0; i < #squares; i++) {
+        squares[i] = i * i;
+    }
+    printf("squares[7] = %d\n", squares[7]);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: arrays"
+Code | What it does
+`int64[] scores = {72, 91, 58, 85, 99, 64};` | An array of six numbers. Positions go from 0 to 5.
+`int64 best = scores[0];` | `scores[0]` is the first element, 72.
+`for (int64 i = 0; i < #scores; i++) {` | `#scores` is the number of elements (6), so `i` goes 0, 1, ..., 5.
+`total = total + scores[i];` | Adds the element at position `i`.
+`if (scores[i] > best) { best = scores[i]; }` | Remembers the largest value seen so far.
+`int64[10] squares;` | An array of ten numbers, all starting at 0.
+`squares[i] = i * i;` | Stores a value at position `i`.
+@end
+
+@section{tour-text} Text
+String literals are written in double quotes. A `string` variable holds the address of a text, which can be passed to `printf` with `%s`. To build or change text at run time, use a byte buffer and the functions of `<string>`.
+
+@example run title="Strings and text buffers"
+import <string>;
+
+@Entry
+pub func main(): int64 {
+    string name = "Ada";
+    string[] colors = {"red", "green", "blue"};
+    printf("Hello, %s! You like %s.\n", name, colors[1]);
+
+    uint8[64] message;
+    strcpy(&message, "The Ashley ");
+    strcat(&message, "Project");
+    printf("%s has %d characters\n", &message, strlen(&message));
+    str_upper(&message);
+    printf("%s\n", &message);
+    printf("'Ashley' starts at index %d\n", strstr("The Ashley Project", "Ashley"));
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: text"
+Code | What it does
+`import <string>;` | Brings in the text functions of the `<string>` library.
+`string name = "Ada";` | A text variable.
+`string[] colors = {"red", "green", "blue"};` | An array of texts; `colors[1]` is "green".
+`uint8[64] message;` | A buffer of 64 bytes where text can be built and changed.
+`strcpy(&message, "The Ashley ");` | Copies a text into the buffer. `&message` is the buffer's address.
+`strcat(&message, "Project");` | Appends a text at the end.
+`strlen(&message)` | Counts the characters.
+`str_upper(&message);` | Turns the letters into capitals, inside the buffer.
+`strstr("The Ashley Project", "Ashley")` | Finds where one text appears in another: position 4.
+@end
+
+@section{tour-structs} Grouping Data with Structures
+A structure groups named fields. Fields are accessed with `.`, or with `->` through a pointer; a function that receives a pointer can change the caller's structure.
+
+@example run title="A structure and a function that changes it"
+typedef struct {
+    int64 x;
+    int64 y;
+    int64 dx;
+    int64 dy;
+} Ball;
+
+func step(Ball* b): void {
+    b->x = b->x + b->dx;
+    b->y = b->y + b->dy;
+    if (b->x < 0 || b->x > 20) { b->dx = 0 - b->dx; }
+    if (b->y < 0 || b->y > 10) { b->dy = 0 - b->dy; }
+}
+
+@Entry
+pub func main(): int64 {
+    Ball ball;
+    ball.x = 18;
+    ball.y = 2;
+    ball.dx = 3;
+    ball.dy = 4;
+    repeat (4) {
+        step(&ball);
+        printf("ball at (%d, %d)\n", ball.x, ball.y);
+    }
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: structures"
+Code | What it does
+`typedef struct { ... } Ball;` | Defines a new type, `Ball`, made of four `int64` fields.
+`func step(Ball* b): void {` | Receives a pointer to a `Ball`: the address of a ball, so the function can change it.
+`b->x = b->x + b->dx;` | `->` reaches a field through the pointer: moves the ball horizontally.
+`b->dx = 0 - b->dx;` | Reverses the direction when the ball reaches a wall.
+`Ball ball;` | Creates a `Ball` variable (all fields start at 0).
+`ball.x = 18;` | `.` reaches a field of the variable itself.
+`step(&ball);` | Passes the address of `ball`, so `step` changes this ball.
+@end
+
+@section{tour-classes} Organizing Code with Classes
+A class groups related functions under one name and can keep some of them private.
+
+@example run title="A class as a namespace"
+class Temperature {
+    pub func to_fahrenheit(int64 c): int64 {
+        return Temperature.scale(c) + 32;
+    }
+    pub func to_kelvin(int64 c): int64 {
+        return c + 273;
+    }
+    priv func scale(int64 c): int64 {
+        return c * 9 / 5;
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    int64[] celsius = {-40, 0, 37, 100};
+    for (int64 i = 0; i < #celsius; i++) {
+        int64 c = celsius[i];
+        printf("%4d C = %4d F = %4d K\n", c, Temperature.to_fahrenheit(c), Temperature.to_kelvin(c));
+    }
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: classes"
+Code | What it does
+`class Temperature { ... }` | Groups three functions under the name `Temperature`.
+`pub func to_fahrenheit(int64 c): int64 {` | A public method: it can be called from anywhere.
+`Temperature.scale(c)` | Calls another method of the same class.
+`priv func scale(int64 c): int64 {` | A private method: only methods of `Temperature` may call it.
+`Temperature.to_kelvin(c)` | Calling a method from outside the class: class name, dot, method name.
+`printf("%4d C = ...")` | `%4d` prints the number using at least 4 characters, which aligns the columns.
+@end
+
+@section{tour-libs} Using Libraries
+`import` brings in a library. The libraries of `nlib` cover strings, mathematics, system calls and command line arguments; any C function can be called as well.
+
+@example run args="Grace 36" title="Arguments, math and C functions together"
+import <args>;
+import <math>;
+
+@Entry
+pub func main(int64 argc, int64 argv): int64 {
+    if (argc < 3) {
+        printf("usage: program NAME NUMBER\n");
+        return 1;
+    }
+    int64 n = arg_int(argv, 2);
+    printf("Hello %s!\n", arg_at(argv, 1));
+    printf("%d: square root %d, prime %d, factorial digits %d\n",
+        n, isqrt(n), is_prime(n), ilog10(factorial(15)) + 1);
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: libraries and arguments"
+Code | What it does
+`import <args>;` `import <math>;` | Bring in two libraries.
+`pub func main(int64 argc, int64 argv): int64 {` | `main` receives the number of command line words (`argc`) and where they are (`argv`).
+`if (argc < 3) { ... return 1; }` | Checks that two words were given after the program name.
+`arg_int(argv, 2)` | Converts the second word ("36") to a number.
+`arg_at(argv, 1)` | The first word, as text ("Grace").
+`isqrt(n)`, `is_prime(n)`, `factorial(15)`, `ilog10(...)` | Functions from `<math>`: square root, primality, factorial, number of digits minus one.
+@end
+
+The example above was run with the arguments `Grace 36`.
+
+@section{tour-lowlevel} Going Low Level
+When you need full control, you can write processor instructions inside an ASH function and use ASH variables in them by name.
+
+@example run asm=rotate show=src,out,asm title="An asm block in an ASH function"
+func rotate(uint64 v, int64 n): uint64 {
+    uint64 r = 0;
+    asm {
+        mov rax, v
+        mov rcx, n
+        rol rax, cl
+        mov r, rax
+    }
+    return r;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%llx\n", rotate(0x8000000000000001, 4));
+    return 0;
+}
+@end
+
+@table widths=42,58 title="Line by line: assembly"
+Code | What it does
+`uint64 r = 0;` | A variable that will receive the result.
+`asm {` | Starts a block of processor instructions.
+`mov rax, v` | Copies the value of the ASH variable `v` into the register `rax`.
+`mov rcx, n` | Copies `n` into `rcx`; its low byte is `cl`.
+`rol rax, cl` | Rotates the bits of `rax` to the left by `cl` positions.
+`mov r, rax` | Stores the result in the ASH variable `r`.
+`}` | Ends the assembly block.
+@end
+
+The disassembly shows the four instructions of the block, with `v`, `n` and `r` replaced by the places where the compiler keeps them.
+
+@section{tour-next} Where to Go from Here
+You have now seen the essential features of ASH. The rest of the manual covers each of them in depth:
+
+- the exact rules for literals, types and conversions ([[ch-lex]], [[ch-types]]);
+- every statement and operator ([[ch-expr]], [[ch-cf]]);
+- functions, callbacks and variadic functions ([[ch-funcs]]);
+- arrays, structures, classes and cracks ([[ch-arrays]] to [[ch-cracks]]);
+- annotations, directives, modules and inline assembly ([[ch-annotations]] to [[ch-asm]]);
+- every library function, with examples ([[ch-nlib]]);
+- complete programs ([[ch-cookbook]]).

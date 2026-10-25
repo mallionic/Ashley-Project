@@ -1,0 +1,103 @@
+@appendix{app-c} ASH for C Programmers
+@index C programmers
+This appendix is a side-by-side comparison for programmers who already know C. Most C code translates to ASH line by line; the tables point out what is written differently, what ASH adds and what it does not have.
+
+@section{c-syntax} Syntax Differences
+@table widths=36,32,32 title="C constructs and their ASH equivalents" label=tab-c-vs-ash
+Construct | C | ASH
+Function | `long add(long a, long b) { ... }` | `func add(int64 a, int64 b): int64 { ... }` (C order also accepted: `func int64 add(...)`)
+Entry point | `int main(int argc, char **argv)` | `@Entry pub func main(int64 argc, int64 argv): int64`
+Exported function | (default) | `pub func ...`
+File-private function | `static long f(...)` | `priv func f(...)`
+Global variable | `long counter = 0;` | `general static int64 counter = 0`
+File-private global | `static long counter;` | `ungeneral static int64 counter`
+Constant | `const int LIMIT = 10;` or `#define LIMIT 10` | `general int32 LIMIT = 10` (no `static`) or `define LIMIT 10;`
+Conditional compilation | `#if`, `#ifdef` | `%if`, `%ifdef`
+Include | `#include "x.h"` | `import "x.ash";` (definitions, not only declarations)
+Else-if | `else if` | `elif` or `else if`
+Counted loop | `for (i = 0; i < n; i++)` | the same, or `repeat (n) { }`
+Infinite loop | `for (;;)` / `while (1)` | `loop { }`
+Do-while | `do { } while (c);` | `loop { ...; if (!(c)) { break; } }`
+Power | `pow(a, b)` (floating point) | `a ** b` (integer)
+Array with length | `int a[4]; sizeof a / sizeof a[0]` | `int64[4] a; #a`
+Struct | `struct P { int x; };` | `struct P { int32 x; };` or `typedef struct { ... } P;`
+Pointer to struct field | `p->x` | `p->x`
+Function pointer call | `fp(1, 2)` | `fp(1, 2)` where `fp` holds `&f`
+Inline assembly | `__asm__("..." : ... )` | `asm { ... }` with variable names, or the same `asm("...")` form
+Comments | `//`, `/* */` | `//`, `/* */`
+@end
+
+@section{c-adds} What ASH Adds
+- `repeat`, `loop`, `elif`, `terminate` (leave a function from any depth) and `unreturnable` (pending results).
+- Arrays that know their length (`#a`) and bounds-checked indexing.
+- Classes as namespaces with private methods.
+- Cracks: configuration entry points inside functions.
+- `**` and `***` operators with compile-time evaluation.
+- `asm { }` blocks that use variables by name; `emit` for raw bytes; `@naked` functions; `runnable` executable arrays.
+- One compiler for 16, 32 and 64-bit code, flat binaries and ELF/COFF objects; a built-in assembler.
+- Annotations, including user-defined ones whose code is inserted into functions.
+- Override rights to resolve duplicate definitions across files.
+- A readable intermediate representation (ASHIR) for every program.
+
+@section{c-lacks} What ASH Does Not Have (in 1.0)
+- Floating-point arithmetic (use `<math>` fixed point).
+- `sizeof`, `?:`, `goto`, the comma operator, `do`/`while`, `union`, `enum` (use `define` constants), bit fields.
+- Comparisons and logical operators as values (`x = a < b`).
+- Block scope for local variables.
+- Scaled pointer arithmetic: `p + 1` is the next byte; use `p[i]`.
+- Header files: there are no separate declarations; `import` brings in the whole file.
+
+@section{c-semantics} Semantic Differences That Matter
+@table widths=34,66 title="Behaviors that differ from C" label=tab-c-semantics
+Topic | ASH behavior
+Uninitialized locals | Always zero.
+Parameters | Assigning to a parameter creates a private copy (as in C), handled by the compiler.
+Signed overflow | Wraps around (C leaves it undefined).
+`char` | Unsigned 8-bit.
+Undeclared function | Called as an external C function with integer arguments (C89 implicit declaration).
+Global constants | Globals are constant unless declared `static`; assigning to them is a compile-time error.
+Arrays as values | An array variable is the address of its elements (like a decayed C array) and also carries its length.
+Local arrays and structures | Allocated on the heap, never freed automatically.
+Duplicate definitions | Resolved by override rights instead of always being an error.
+@end
+
+@section{c-port} Porting a C Function
+The following C function and its ASH translation compute the length of the longest run of equal bytes in a buffer:
+
+@code c nocheck
+size_t longest_run(const unsigned char *buf, size_t n) {
+    size_t best = 0, cur = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (i > 0 && buf[i] == buf[i - 1]) cur++;
+        else cur = 1;
+        if (cur > best) best = cur;
+    }
+    return best;
+}
+@end
+
+@example run title="The same function in ASH" label=ex-c-port
+func longest_run(uint8* buf, uint64 n): uint64 {
+    uint64 best = 0;
+    uint64 cur = 0;
+    for (uint64 i = 0; i < n; i++) {
+        if (i > 0 && buf[i] == buf[i - 1]) {
+            cur++;
+        } else {
+            cur = 1;
+        }
+        if (cur > best) {
+            best = cur;
+        }
+    }
+    return best;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%llu\n", longest_run("aabbbbcdddd", 11));
+    return 0;
+}
+@end
+
+The translation changes only the declarations (types after names are written before, the result type after the parameters), adds the braces that ASH requires, and keeps everything else.

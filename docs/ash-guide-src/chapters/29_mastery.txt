@@ -1,0 +1,571 @@
+@chapter{ch-mastery} Common Mistakes, Techniques and Questions
+@index common mistakes; FAQ; techniques
+This chapter collects the mistakes that beginners make most often in ASH, each with the wrong program, what happens, and the corrected program; then techniques that help you write, understand and debug ASH programs like an expert; and finally answers to frequently asked questions.
+
+@section{mis-intro} Common Mistakes
+Every mistake below was reproduced with the real compiler. When the compiler prints the message in Spanish, the English translation is shown.
+
+@subsection{mis-assign} Using = instead of == in a condition
+`=` stores a value; `==` compares two values. A condition needs a comparison.
+
+@example fail title="Wrong: = inside if" translate="<input>:4:11: error: expected ) but found ASSIGN(=)@4:11\n    4 | =\n      |           ^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 x = 3;
+    if (x = 3) { return 1; }
+    return 0;
+}
+@end
+
+@example run title="Right: == compares" label=ex-mis-assign-ok
+@Entry
+pub func main(): int64 {
+    int64 x = 3;
+    if (x == 3) {
+        printf("x is three\n");
+    }
+    return 0;
+}
+@end
+
+@subsection{mis-braces} Forgetting the braces of if and loops
+In ASH the body of `if`, `while`, `for`, `repeat` and `loop` must always be written between `{` and `}`, even when it has one statement. A `;` right after the condition is also wrong.
+
+@example fail title="Wrong: a semicolon instead of a block" translate="<input>:4:16: error: expected { but found SEMICOLON(;)@4:16\n    4 | ;\n      |                ^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 x = 3;
+    if (x == 3); { printf("hi\n"); }
+    return 0;
+}
+@end
+
+@example run title="Right: always a block" label=ex-mis-braces-ok
+@Entry
+pub func main(): int64 {
+    int64 x = 3;
+    if (x == 3) { printf("hi\n"); }
+    return 0;
+}
+@end
+
+@subsection{mis-offbyone} Counting array positions from 1
+The first element of an array is at position 0, and the last at position `#v - 1`. Using `<=` with the length goes one step too far, and the program stops with exit status 134.
+
+@example run expect=134 title="Wrong: i <= #v reads one element too many" label=ex-mis-off
+@Entry
+pub func main(): int64 {
+    int64[] v = {5, 10, 15};
+    int64 total = 0;
+    for (int64 i = 0; i <= #v; i++) {      // i takes 0, 1, 2 and 3: position 3 does not exist
+        total = total + v[i];
+    }
+    printf("total=%d\n", total);
+    return 0;
+}
+@end
+
+@example run title="Right: i < #v" label=ex-mis-off-ok
+@Entry
+pub func main(): int64 {
+    int64[] v = {5, 10, 15};
+    int64 total = 0;
+    for (int64 i = 0; i < #v; i++) {
+        total = total + v[i];
+    }
+    printf("total=%d\n", total);
+    return 0;
+}
+@end
+
+@subsection{mis-intdiv} Expecting decimals from integer division
+Dividing two integers gives an integer: the fraction is dropped. Multiply before dividing, or use fixed-point arithmetic from `<math>`.
+
+@example run title="Integer division drops the fraction" label=ex-mis-intdiv
+import <math>;
+
+@Entry
+pub func main(): int64 {
+    int64 a = 7;
+    int64 b = 2;
+    printf("7 / 2 = %d (not 3.5)\n", a / b);
+    printf("7 * 100 / 2 = %d hundredths\n", a * 100 / b);
+    uint8[32] text;
+    printf("with fixed point: %s\n", fx_print_buf(fx_div(fx(a), fx(b)), &text));
+    return 0;
+}
+@end
+
+@subsection{mis-overflow} Choosing a type that is too small
+A `uint8` holds 0 to 255. Adding beyond that wraps around to 0 without any warning at run time. Choose `int64` unless you need a smaller type.
+
+@example run title="A small type wraps around" label=ex-mis-overflow
+@Entry
+pub func main(): int64 {
+    uint8 visitors = 250;
+    repeat (10) {
+        visitors = visitors + 1;
+    }
+    printf("uint8 after 260 visitors: %d\n", visitors);
+    int64 better = 250;
+    repeat (10) {
+        better = better + 1;
+    }
+    printf("int64 after 260 visitors: %d\n", better);
+    return 0;
+}
+@end
+
+@subsection{mis-printf} Using %d for very large numbers
+`%d` prints a 32-bit value. For numbers that need 64 bits use `%lld` (signed) or `%llu` (unsigned).
+
+@example run title="%d versus %lld" label=ex-mis-printf
+@Entry
+pub func main(): int64 {
+    int64 big = 5000000000;
+    printf("with %%d:   %d\n", big);
+    printf("with %%lld: %lld\n", big);
+    return 0;
+}
+@end
+
+@subsection{mis-noreturn} Forgetting return in a function with a result
+A function declared with a result type (`: int64`) must give a value back with `return`. If it reaches its closing brace without a `return`, the program crashes when it is called (exit status 139, a segmentation fault).
+
+@example run maxlines=4 title="Wrong: no return statement" label=ex-mis-noreturn
+func five(): int64 {
+    int64 x = 5;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("calling five()\n");
+    fflush(0);
+    return five();
+}
+@end
+
+Because no return instruction was generated, the processor continued into the code that follows `five` in memory; here it ran into `main` again, printed the message several times and finally crashed with a segmentation fault (signal 11).
+
+@example run title="Right: return the value" label=ex-mis-noreturn-ok
+func five(): int64 {
+    int64 x = 5;
+    return x;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("five() = %d\n", five());
+    return 0;
+}
+@end
+
+@subsection{mis-literal} Changing the letters of a string literal
+A text written in quotes is stored in memory that cannot be changed. Writing into it crashes the program. Copy the text into a buffer first.
+
+@example run title="Wrong: writing into a literal" label=ex-mis-literal
+@Entry
+pub func main(): int64 {
+    string s = "cat";
+    printf("before\n");
+    fflush(0);
+    s[0] = 'b';               // the literal cannot be modified: crash
+    printf("%s\n", s);
+    return 0;
+}
+@end
+
+@example run title="Right: modify a copy in a buffer" label=ex-mis-literal-ok
+import <string>;
+
+@Entry
+pub func main(): int64 {
+    uint8[16] s;
+    strcpy(&s, "cat");
+    s[0] = 'b';
+    printf("%s\n", &s);
+    return 0;
+}
+@end
+
+@subsection{mis-concat} Joining strings with +
+`+` adds numbers; it does not join texts. Use `strcpy` and `strcat`, or `snprintf`.
+
+@example run title="Right: joining texts with snprintf" label=ex-mis-concat
+@Entry
+pub func main(): int64 {
+    string first = "Ada";
+    string last = "Lovelace";
+    uint8[64] full;
+    snprintf(&full, 64, "%s %s", first, last);
+    printf("%s\n", &full);
+    return 0;
+}
+@end
+
+@subsection{mis-cmpvalue} Storing a comparison in a variable
+In ASH a comparison is not a value; it can only be used as a condition.
+
+@example fail title="Wrong: a comparison as a value"
+@Entry
+pub func main(): int64 {
+    int64 a = 3;
+    int64 is_small = a < 10;
+    return is_small;
+}
+@end
+
+@example run title="Right: set the variable inside an if" label=ex-mis-cmp-ok
+@Entry
+pub func main(): int64 {
+    int64 a = 3;
+    int64 is_small = 0;
+    if (a < 10) {
+        is_small = 1;
+    }
+    printf("is_small=%d\n", is_small);
+    return 0;
+}
+@end
+
+@subsection{mis-global} Declaring a global without general or ungeneral
+@example fail title="Wrong: the global does not say who can see it"
+int64 score = 0
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+@example run title="Right: general static for a writable, public global" label=ex-mis-global-ok
+general static int64 score = 0
+
+func add_points(int64 p): void {
+    score = score + p;
+}
+
+@Entry
+pub func main(): int64 {
+    add_points(10);
+    add_points(5);
+    printf("score=%d\n", score);
+    return 0;
+}
+@end
+
+@subsection{mis-order} Mixing printf with direct writes
+`printf` keeps its output in a buffer and writes it later; `sys_write` (and `print` from `<syscalls>`) writes immediately. Mixing both can print lines in an unexpected order. Use one kind of output, or call `fflush(0)` before writing directly.
+
+@example run title="Output order with and without fflush" label=ex-mis-order
+import <syscalls>;
+
+@Entry
+pub func main(): int64 {
+    printf("1. printf (buffered)\n");
+    fflush(0);                          // without this line, 1 could appear after 2
+    println("2. println (direct)");
+    printf("3. printf again\n");
+    return 0;
+}
+@end
+
+@subsection{mis-ptr} Adding to a pointer to move one element
+Adding 1 to a pointer moves it by one **byte**, not by one element. Use indexing.
+
+@example run title="Indexing instead of pointer arithmetic" label=ex-mis-ptr
+@Entry
+pub func main(): int64 {
+    int64[] v = {100, 200, 300};
+    int64* p = &v;
+    printf("p[1]     = %d\n", p[1]);          // the second element
+    printf("*(p + 8) = %d\n", *(p + 8));      // also the second element: 8 bytes later
+    return 0;
+}
+@end
+
+@subsection{mis-mistakes-table} More mistakes in brief
+@table widths=40,60 title="More common mistakes"
+Mistake | What to do
+Calling `printf` in a `--no-libc` program | Use `print`, `println`, `print_int` from `<syscalls>`.
+A `_start` entry function that ends with `return` | Use `main` with the C library, or end `_start` with `exit(...)` / `sys_exit(...)`.
+Using `printf` in a 16-bit program | 16-bit programs have no C library; write output with BIOS calls in `asm`.
+Naming a variable like a register (`al`, `cx`) and using it in `asm` | Inside `asm`, register names always mean registers. Choose another name.
+`import <stdlib>;` | Do not import it in ASH 1.0; call the C functions directly ([[nlib-stdlib]]).
+`continue` inside a `switch` inside a loop | Use a flag ([[cf-break]]).
+Writing `int64 v[]` as a parameter | Write `int64* v`.
+Forgetting `static` on a global you change | Without `static`, a global is constant.
+Expecting a variable declared inside `{ }` to disappear after it | In ASH 1.0 it remains visible until the end of the function; use different names.
+Forgetting `#` and writing a fixed count in a loop | `for (int64 i = 0; i < #v; i++)` adapts when the array changes.
+@end
+
+@section{tec-intro} Techniques to Master ASH
+@subsection{tec-look} Look at what the compiler did
+Two commands show you exactly what your program became. Use them whenever a result surprises you:
+
+@code sh
+ashc prog.ash --stdout -s                       # the ASHIR: one simple step per line
+ashc prog.ash --elf -s && objdump -d -M intel out/prog.o   # the machine code
+@end
+
+@example ir=average show=src,ir title="Reading the ASHIR of your own function" label=ex-tec-ashir
+func average(int64 a, int64 b, int64 c): int64 {
+    return (a + b + c) / 3;
+}
+
+@Entry
+pub func main(): int64 {
+    return average(10, 20, 30);
+}
+@end
+
+Each line does one thing: copy `a`, add `b`, add `c`, divide by 3, return. When an expression gives an unexpected value, the ASHIR shows the order in which it was computed.
+
+@subsection{tec-exit} Use the exit status for quick tests
+Returning a value from `main` and printing `$?` in the shell is the quickest way to check a small function without writing any output code.
+
+@code sh
+ashc test.ash --elf -s && gcc out/test.o -o test && ./test; echo "result: $?"
+@end
+
+@subsection{tec-assert} Write your own checks
+A small `check` function that prints a message when a condition fails, plus a counter of failures, turns any program into a test program:
+
+@example run title="A tiny test framework" label=ex-tec-tests
+import <math>;
+import <string>;
+
+general static int64 failures = 0
+general static int64 checks = 0
+
+func check(int64 ok, string what): void {
+    checks = checks + 1;
+    if (ok == 0) {
+        failures = failures + 1;
+        printf("FAILED: %s\n", what);
+    }
+}
+
+func same(int64 a, int64 b): int64 {
+    if (a == b) { return 1; }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    check(same(gcd(84, 36), 12), "gcd(84, 36) == 12");
+    check(same(isqrt(1000000), 1000), "isqrt(1000000) == 1000");
+    check(same(strlen("ASH"), 3), "strlen(\"ASH\") == 3");
+    check(same(ipow(2, 10), 1000), "ipow(2, 10) == 1000 (this check is wrong on purpose)");
+    printf("%d checks, %d failed\n", checks, failures);
+    return failures;
+}
+@end
+
+@subsection{tec-trace} Trace functions with an annotation
+A user annotation adds the same tracing code to as many functions as you like, and can be removed in one place ([[ann-user]]):
+
+@example run title="Tracing with an annotation" label=ex-tec-trace
+@Trace(string name) {
+    printf("-> %s\n", name);
+}
+
+@Trace("parse")
+func parse(): int64 {
+    return 1;
+}
+
+@Trace("evaluate")
+func evaluate(int64 x): int64 {
+    return x * 10;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 r = evaluate(parse());
+    printf("result %d\n", r);
+    return 0;
+}
+@end
+
+@subsection{tec-strict} Let the compiler help you
+Start every new file with `"use strict";` ([[ch-strict]]), keep the VS Code linter enabled ([[tool-vscode]]) and declare external C functions with `extern`, so that the number of arguments is checked.
+
+@subsection{tec-constants} Give numbers a name
+`define` and `typedef` make programs easier to read and to change:
+
+@example run title="Named constants and type names" label=ex-tec-define
+define WIDTH 40;
+define HEIGHT 10;
+define CHAR_WALL '#';
+typedef int64 pixels;
+
+func area(pixels w, pixels h): pixels {
+    return w * h;
+}
+
+@Entry
+pub func main(): int64 {
+    for (int64 x = 0; x < WIDTH; x++) { printf("%c", CHAR_WALL); }
+    printf("\narea = %d pixels\n", area(WIDTH, HEIGHT));
+    return 0;
+}
+@end
+
+@subsection{tec-time} Measure how long code takes
+The processor's time-stamp counter, read with the `rdtsc` instruction, counts clock cycles. Reading it before and after a piece of code measures its cost:
+
+@example run title="Measuring cycles with rdtsc" label=ex-tec-rdtsc
+func cycles(): uint64 {
+    uint64 lo = 0;
+    uint64 hi = 0;
+    asm volatile("rdtsc; mov {lo}, rax; mov {hi}, rdx");
+    return (hi << 32) | lo;
+}
+
+@Entry
+pub func main(): int64 {
+    uint64 t0 = cycles();
+    int64 sum = 0;
+    for (int64 i = 0; i < 1000000; i++) {
+        sum = sum + i;
+    }
+    uint64 t1 = cycles();
+    int64 spent = t1 - t0;
+    if (spent > 0) {
+        printf("sum=%lld, measured a positive number of cycles\n", sum);
+    }
+    return 0;
+}
+@end
+
+(The exact number of cycles changes from run to run and from machine to machine, so the example prints only that the measurement worked.)
+
+@subsection{tec-bits} Bit tricks
+Many small problems have fast answers with bitwise operators:
+
+@example run title="Useful bit tricks" label=ex-tec-bits
+@Entry
+pub func main(): int64 {
+    int64 n = 40;
+    if ((n & (n - 1)) == 0) { printf("%d is a power of two\n", n); } else { printf("%d is not a power of two\n", n); }
+    printf("lowest bit of %d: %d\n", n, n & 1);
+    printf("%d rounded up to a multiple of 16: %d\n", n, (n + 15) & ~15);
+    printf("bit 3 of %d is %d\n", n, (n >> 3) & 1);
+    printf("%d with bit 0 set: %d\n", n, n | 1);
+    printf("%d with bit 3 cleared: %d\n", n, n & ~8);
+    printf("swap 6 and 9 with xor: ");
+    int64 a = 6;
+    int64 b = 9;
+    a = a ^ b;
+    b = a ^ b;
+    a = a ^ b;
+    printf("a=%d b=%d\n", a, b);
+    return 0;
+}
+@end
+
+@subsection{tec-debug} Debug with gdb
+ASH programs are ordinary executables, so the GNU debugger works with them: you can stop at a function, step instruction by instruction and inspect registers. Build with `-e` (a full frame in every function) to get clearer backtraces.
+
+@code sh
+ashc prog.ash --elf -e -s && gcc -no-pie out/prog.o -o prog
+gdb ./prog
+(gdb) break square              # stop when square is called
+(gdb) run
+(gdb) disassemble               # the machine code of the current function
+(gdb) info registers rdi rax    # argument and result registers
+(gdb) stepi                     # execute one instruction
+(gdb) finish                    # run until the function returns
+@end
+
+@subsection{tec-portable} Write code for several targets
+Use `%if` with the predefined symbols to keep 16, 32 and 64-bit variants, or Linux and Windows variants, in one file ([[ch-pp]]). Keep the target-specific parts small and put them in separate functions.
+
+@section{faq} Frequently Asked Questions
+@subsection Is ASH a replacement for C?
+ASH can do most of what C does in systems programming, and adds direct assembly, multi-mode code generation and safety checks. It is not source-compatible with C, has no floating-point arithmetic in version 1.0 and has a smaller library. It links freely with C, so the two can be combined.
+
+@subsection Do ASH programs need Java to run?
+No. Only the compiler is written in Java, and even the compiler is distributed as a native executable. The programs it produces are ordinary machine code.
+
+@subsection Which name should the entry function have?
+`main` if the program uses the C library (the usual case), `_start` if it does not. See [[start-entry]].
+
+@subsection Why does my program print nothing and return a strange number?
+The exit status is shown with `echo $?` after running the program. A value of 134 means an array index was out of range; 139 means a segmentation fault (a crash); 136 a division by zero. See [[tab-runtime-errors]].
+
+@subsection How do I read a number typed by the user?
+Use `scanf` from the C library, or read a line with `fgets` and convert it with `atoi`:
+
+@example run stdin="21\n" title="Reading a number" label=ex-faq-read
+@Entry
+pub func main(): int64 {
+    int64 n = 0;
+    printf("Enter a number: ");
+    scanf("%lld", &n);
+    printf("twice %lld is %lld\n", n, n * 2);
+    return 0;
+}
+@end
+
+@subsection How do I generate random numbers?
+Call the C functions `srand` and `rand` directly:
+
+@example run title="Random numbers" label=ex-faq-rand
+extern void srand(uint32 seed);
+extern int32 rand();
+
+@Entry
+pub func main(): int64 {
+    srand(2026);
+    int64 dice_total = 0;
+    repeat (10) {
+        int64 die = rand() % 6 + 1;
+        dice_total = dice_total + die;
+    }
+    if (dice_total >= 10) {
+        if (dice_total <= 60) {
+            printf("ten dice thrown, the total is between 10 and 60\n");
+        }
+    }
+    return 0;
+}
+@end
+
+@subsection How do I allocate memory whose size is known only at run time?
+Declare an array with a computed size (`int64[n] v;`), or call `malloc` and `free` from the C library ([[cb-list]]). Without the C library use `sys_mmap` ([[nlib-syscalls]]).
+
+@subsection How do I return several values from a function?
+Pass pointers to variables of the caller, or fill a structure that the caller provides:
+
+@example run title="Returning two values through pointers" label=ex-faq-two
+func divide(int64 a, int64 b, int64* quotient, int64* remainder): void {
+    quotient[0] = a / b;
+    remainder[0] = a % b;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 q = 0;
+    int64 r = 0;
+    divide(17, 5, &q, &r);
+    printf("17 / 5 = %d remainder %d\n", q, r);
+    return 0;
+}
+@end
+
+@subsection Can I write a whole program in assembly?
+Yes: either as `shasm` source files ([[ch-shasm]]) or as ASH functions marked `@naked` ([[asm-naked]]). Mixing both styles is the usual approach: ASH for structure, assembly for the critical parts.
+
+@subsection Why are local arrays not freed?
+ASH 1.0 allocates local arrays on the heap and never frees them, to keep the generated code simple ([[arr-layout]]). For programs that run long loops, allocate arrays once outside the loop.
+
+@subsection How big are ASH programs?
+A program that uses the C library is a few kilobytes, like an equivalent C program. A static `--no-libc` program is typically under 10 kilobytes, and a `--exe` program can be under 200 bytes.
+
+@subsection Can ASH build an operating system or a boot loader?
+Yes. Use `@bits(16)` for real-mode code, `@bits(32)` or `@bits(64)` with `--elf` and a linker script for kernels, `@section` to place headers, `@naked` for entry and interrupt code, and `<string>`, `<math>` and structures, which need no C library ([[tgt-flat]]).
+
+@subsection Where can I see more examples?
+In the `examples/` directory of the source tree ([[app-examples]]), in the cookbook ([[ch-cookbook]]) and in the library reference, where every function has an example ([[ch-nlib]]).

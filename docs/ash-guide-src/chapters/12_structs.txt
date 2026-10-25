@@ -1,0 +1,208 @@
+@chapter{ch-structs} Structures and Pointers
+@index struct; structures
+A structure groups named fields of different types into one object. ASH structures use the same layout rules as C, so a structure declared in ASH can describe a C structure, a hardware register block, a file header or a firmware table byte for byte. This chapter describes declaration, layout, field access, pointers to structures and chains of pointers.
+
+@section{st-decl} Declaring Structures
+Two forms are accepted, both taken from C:
+
+@code text nocheck
+typedef struct [Tag] {
+    type field;
+    ...
+} Name;
+
+struct Name {
+    type field;
+    ...
+};
+@end
+
+After either declaration, `Name` is a type that can be used for variables, pointers (`Name*`) and fields of other structures. In the second form, `struct Name var;` is also accepted (the word `struct` is dropped).
+
+A field type can be any integer type, `bool`, `char`, a pointer (including a pointer to a structure, even of the same structure), or another structure already defined. A structure is embedded in another one by writing its name as the field type: `Point origin;`.
+
+@section{st-layout} Layout
+@index structure layout; alignment; padding
+Fields are laid out in declaration order. Each field is aligned to its *natural alignment* (its own size for integers and pointers, the largest alignment of its fields for an embedded structure); padding bytes are inserted where needed. The size of the structure is rounded up to a multiple of its largest alignment. These are the rules of the System V ABI, which C compilers follow on x86-64.
+
+@table widths=26,14,14,46 title="Layout of the Person structure" label=tab-person-layout
+Field | Offset | Size | Note
+`uint16 age` | 0 | 2 |
+`uint8 alive` | 2 | 1 | followed by 1 byte of padding
+`uint32 id` | 4 | 4 | aligned to 4
+`int64 balance` | 8 | 8 | aligned to 8
+(total) | | 16 | multiple of 8
+@end
+
+@example run title="Fields at their C offsets" label=ex-struct-layout
+typedef struct {
+    uint16 age;
+    uint8  alive;
+    uint32 id;
+    int64  balance;
+} Person;
+
+@Entry
+pub func main(): int64 {
+    Person p;
+    p.age = 14;
+    p.alive = 1;
+    p.id = 0x12345678;
+    p.balance = -250;
+    uint8* raw = &p;                       // look at the bytes
+    printf("byte 0=%x byte 2=%x bytes 4..7=%x %x %x %x\n",
+        raw[0], raw[2], raw[4], raw[5], raw[6], raw[7]);
+    printf("age=%d alive=%d id=%x balance=%lld\n", p.age, p.alive, p.id, p.balance);
+    return 0;
+}
+@end
+
+The bytes of `id` appear in the order 78 56 34 12 because x86 is little-endian: the least significant byte is stored first.
+
+@section{st-vars} Structure Variables
+A variable of structure type is a block of memory large enough for the structure, obtained from `__ash_alloc` and zero-filled when the declaration executes. The variable holds the address of the block: `&p` and `p` used as an address are the same value. Assigning one structure variable to another copies the address, not the contents; copy contents field by field or with `memcpy`.
+
+@example ir=main show=src,ir title="A structure variable is a zero-filled block" label=ex-struct-ir
+struct Point { int32 x; int32 y; };
+
+@Entry
+pub func main(): int64 {
+    Point q;
+    q.x = 3;
+    q.y = 4;
+    return q.x + q.y;
+}
+@end
+
+@section{st-access} Field Access
+@index member access; ->
+@table widths=28,72 title="Field access" label=tab-field-access
+Expression | Meaning
+`p.field` | The field of the structure variable `p`.
+`ptr->field` | The field of the structure at the address held in the pointer `ptr`.
+`a->b->c`, `a->b.c`, `a.b.c` | Chains: follow pointer fields with `->`, enter embedded structures with `.`.
+`p.field = v;` `ptr->field = v;` | Store into a field, with the width of the field.
+`p.n++`, `q->n--` | Increment or decrement a field.
+`&p` | Address of the structure.
+@end
+
+Every access is translated into a typed load or store at *base address + offset*. In ASHIR this is visible as an `add` of the offset followed by `load` or `store`; in machine code it becomes a single instruction with a displacement, such as `mov DWORD PTR [rax+0x4], ecx`.
+
+@example run title="Pointers to structures and chains" label=ex-struct-chain
+struct Point { int32 x; int32 y; };
+
+typedef struct {
+    Point  origin;       // embedded structure at offset 0
+    Point* next;         // pointer to another structure
+    uint8  tag;
+} Node;
+
+func move_right(Point* pt, int32 dx): void {
+    pt->x = pt->x + dx;
+}
+
+@Entry
+pub func main(): int64 {
+    Point q;
+    q.x = 3;
+    q.y = 4;
+    Node n;
+    n.next = &q;
+    Node* np = &n;
+    np->origin.x = 7;              // embedded field through a pointer
+    int64 y = np->next->y;         // follow the pointer field
+    np->next->x = 99;              // store through two levels
+    move_right(&q, 1);
+    printf("y=%d origin.x=%d q.x=%d\n", y, n.origin.x, q.x);
+    return 0;
+}
+@end
+
+@section{st-functions} Structures and Functions
+Structures are passed to functions by address. Declare the parameter as a pointer (`Person* x`) and access the fields with `->`. A function can return a pointer to a structure, but not a structure by value.
+
+@example run title="Passing a structure to a function" label=ex-struct-param
+typedef struct {
+    uint16 age;
+    uint8  alive;
+    uint32 id;
+    int64  balance;
+} Person;
+
+func birthday(Person* x): void {
+    x->age = x->age + 1;
+}
+
+func describe(Person* x): void {
+    printf("id=%x age=%d balance=%lld\n", x->id, x->age, x->balance);
+}
+
+@Entry
+pub func main(): int64 {
+    Person p;
+    p.age = 14;
+    p.id = 0xCAFE;
+    p.balance = -250;
+    Person* ptr = &p;
+    ptr->balance = ptr->balance * 2;
+    birthday(ptr);
+    birthday(&p);
+    describe(&p);
+    return 0;
+}
+@end
+
+@section{st-c} Sharing Structures with C
+Because the layout is the C layout, a pointer to an ASH structure can be passed to a C function expecting the corresponding C structure, and vice versa. Declare the fields with types of the same width and signedness as the C fields (see [[tab-int-types]]).
+
+@code ash file=point_lib.ash
+struct Vec { int32 x; int32 y; int64 weight; };
+
+pub func vec_scale(Vec* v, int32 k): void {
+    v->x = v->x * k;
+    v->y = v->y * k;
+    v->weight = v->weight + 1;
+}
+@end
+
+@code c file=point_main.c
+#include <stdio.h>
+struct Vec { int x; int y; long weight; };
+void vec_scale(struct Vec *v, int k);
+
+int main(void) {
+    struct Vec v = { 2, 3, 10 };
+    vec_scale(&v, 5);
+    printf("x=%d y=%d weight=%ld\n", v.x, v.y, v.weight);
+    return 0;
+}
+@end
+
+@session
+$ ashc point_lib.ash --elf -s
+$ gcc -no-pie point_main.c out/point_lib.o -o demo
+$ ./demo
+@end
+
+@section{st-hw} Structures for Memory-Mapped Data
+A pointer to a structure can be set to any address, which is how hardware registers and firmware tables are accessed. Accesses through such a pointer are never bounds-checked. The following fragment describes the 16-bit VGA text cell and writes to the screen buffer of a PC in text mode (meaningful only on bare metal):
+
+@code ash top
+typedef struct {
+    uint8 ch;
+    uint8 attr;
+} Cell;
+
+func put(int64 col, int64 c): void {
+    uint64 screen = 0xB8000;
+    Cell* cell = screen + col * 2;
+    cell->ch = c;
+    cell->attr = 0x1F;          // white on blue
+}
+@end
+
+@section{st-limits} Limitations
+- A structure cannot be declared inside a function.
+- A field cannot be an array; use consecutive fields or a pointer to an array.
+- There is no `sizeof`; the size of a structure is the offset of its last field plus its size, rounded to the alignment (see [[tab-person-layout]]). Write the size as a `define` constant when you need it.
+- Structures cannot be returned or passed by value.

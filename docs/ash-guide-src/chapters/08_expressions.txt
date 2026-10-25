@@ -1,0 +1,258 @@
+@chapter{ch-expr} Expressions and Operators
+@index expressions; operators
+An expression computes a value from operands and operators. This chapter defines the operators of ASH, their precedence and associativity, the exact meaning of each one, and the ASHIR operations and machine instructions they become.
+
+@section{expr-kinds} Kinds of Expressions
+@table widths=28,72 title="Primary expressions" label=tab-primary
+Form | Example
+Literal | `42`, `0xFF`, `'A'`, `"text"`, `L"wide"`
+Variable or parameter | `total`, `argc`
+Global variable | `counter` (rewritten to a typed memory access)
+Parenthesized expression | `(a + b)`
+Function call | `square(3)`, `printf("%d\n", x)`, `Math.twice(4)`
+Call through a pointer chain | `table->handler(1, 2)`, `gST->ConOut->OutputString(gST->ConOut, msg)`
+Index | `v[i]`, `m[i][j]`, `s[0]`, `p[k]`
+Member | `p.age`, `ptr->age`, `a->b->c`
+Length | `#v`
+Array literal | `{1, 2, 3}` (in initializers)
+Cast | `(int32)x`, `(int64*)addr`
+@end
+
+ASH distinguishes *value expressions*, which compute an integer or an address, from *conditions*, which appear only in the headers of `if`, `elif`, `while` and `for` ([[cf-conditions]]). Comparisons and the logical operators `&&`, `||` and `!` belong to conditions: in ASH 1.0 they cannot be used as values.
+
+@section{expr-precedence} Precedence and Associativity
+@index precedence
+The following table lists the operators of value expressions from the highest precedence (binding most tightly) to the lowest. Operators in the same row have the same precedence.
+
+@table widths=8,30,24,38 title="Operator precedence of value expressions" label=tab-precedence
+Level | Operators | Associativity | Description
+1 | `()` `[]` `.` `->` postfix `++` `--` | left to right | Call, index, member, post-increment
+2 | prefix `++` `--`, unary `+` `-` `~` `&` `*` `#`, casts | right to left | Unary operators
+3 | `**` `***` | **right to left** | Power, repeated squaring
+4 | `*` `/` `%` | left to right | Multiplicative
+5 | `+` `-` | left to right | Additive
+6 | `<<` `>>` | left to right | Shifts
+7 | `<` `<=` `>` `>=` `==` `!=` | left to right | Comparisons (conditions only)
+8 | `&` | left to right | Bitwise AND
+9 | `^` | left to right | Bitwise exclusive OR
+10 | `|` | left to right | Bitwise inclusive OR
+@end
+
+In conditions, `!` applies to a parenthesized condition, `&&` binds more tightly than `||`, and both bind more loosely than any operator of the table.
+
+The relative order of shifts, comparisons and bitwise operators is the same as in C. In particular `a & b == c` means `a & (b == c)` and `1 | 2 ^ 3 & 7` means `1 | (2 ^ (3 & 7))`. Use parentheses whenever you combine bitwise operators with comparisons.
+
+@example run title="Precedence in practice" label=ex-precedence
+@Entry
+pub func main(): int64 {
+    int64 a = 2 + 3 * 4 ** 2;      // 2 + (3 * (4 ** 2)) = 50
+    int64 b = 1 << 2 + 1;          // 1 << (2 + 1) = 8
+    int64 c = 10 - 2 - 3;          // (10 - 2) - 3 = 5
+    int64 d = 100 / 10 / 5;        // (100 / 10) / 5 = 2
+    int64 e = 2 ** 3 ** 2;         // 2 ** (3 ** 2) = 512
+    int64 f = 1 | 2 ^ 3 & 7;       // 1 | (2 ^ (3 & 7)) = 1
+    printf("%d %d %d %d %d %d\n", a, b, c, d, e, f);
+    return 0;
+}
+@end
+
+@section{expr-eval} Evaluation and Temporaries
+@index temporaries; three-address code
+The front end evaluates an expression by breaking it into operations on *temporaries*. Every operator becomes one ASHIR operation of the form `%dest op[operand]`, which reads `dest`, combines it with `operand` and writes the result back into `dest`. A sub-expression that is not a simple variable or literal gets its own temporary `__tmp`*N*. Operands are evaluated from left to right.
+
+@example ir show=src,ir title="An expression broken into ASHIR operations" label=ex-tmp
+@Entry
+pub func main(): int64 {
+    int64 a = 5;
+    int64 b = 7;
+    int64 r = (a + b) * (a - b) + 3;
+    return r;
+}
+@end
+
+@section{expr-arith} Arithmetic Operators
+@index addition; multiplication; division; modulo
+@table widths=14,26,22,38 title="Arithmetic operators" label=tab-arith
+Operator | Meaning | ASHIR | x86-64
+`a + b` | Sum, modulo 2^N | `add` | `add`
+`a - b` | Difference, modulo 2^N | `sub` | `sub`
+`a * b` | Product, low N bits | `imul` / `mul` | `imul`
+`a / b` | Quotient, truncated toward zero | `div` | `cqo` + `idiv` (signed), `xor edx,edx` + `div` (unsigned)
+`a % b` | Remainder, sign of the dividend | `mod` | `idiv` / `div`, result in `rdx`
+`-a` | Negation | `0 - a` | `sub` from zero
+`+a` | No effect | |
+@end
+
+Division and remainder obey the identity `(a / b) * b + a % b == a`, as in C. Division by a constant zero is a compile-time error; division by a variable that is zero at run time raises the processor's divide error, which Linux reports as `SIGFPE`.
+
+@example run title="Division and remainder" label=ex-divmod
+@Entry
+pub func main(): int64 {
+    printf("%d %d\n", 17 / 5, 17 % 5);       // 3 2
+    printf("%d %d\n", -17 / 5, -17 % 5);     // -3 -2
+    printf("%d %d\n", 17 / -5, 17 % -5);     // -3 2
+    return 0;
+}
+@end
+
+@example asm=main show=src,asm title="Machine code for division" label=ex-div-asm
+func divide(int64 a, int64 b): int64 {
+    return a / b;
+}
+
+@Entry
+pub func main(): int64 {
+    return divide(100, 7);
+}
+@end
+
+@section{expr-pow} Power and Repeated Squaring
+@index power operator; **; ***
+ASH has two exponentiation operators. Both work on integers and are right-associative.
+
+- `a ** b` is *a* raised to the power *b* (b >= 0).
+- `a *** n` squares *a* repeatedly *n* times, which equals *a* raised to the power 2^*n*: `2 *** 3` is `((2^2)^2)^2 = 256`.
+
+When both operands are constants the result is computed at compile time with arbitrary precision. A result that does not fit in 64 bits, a negative constant exponent, or an exponent larger than 4096 is a compile-time error. When an operand is not constant, the compiler adds a helper function (`__ash_pow`, computing by repeated squaring, or `__ash_sqpow`) and calls it.
+
+@example run ir=main show=src,out,ir title="Constant and run-time powers" label=ex-pow
+@Entry
+pub func main(): int64 {
+    int64 base = 3;
+    int64 e = 4;
+    int64 n = 2;
+    printf("%d %d %d %d\n", 2 ** 10, base ** e, 2 *** 3, base *** n);
+    return 0;
+}
+@end
+
+The ASHIR shows that `2 ** 10` and `2 *** 3` became the constants 1024 and 256, while `base ** e` and `base *** n` became calls to the helpers.
+
+@example fail title="A constant power that does not fit in 64 bits" translate="<input>:3:22: error: the result of '**' does not fit in 64 bits: 1180591620717411303424\n    3 | ;\n      |                      ^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 x = 2 ** 70;
+    return x;
+}
+@end
+
+@section{expr-shift} Shift Operators
+@index shift; <<; >>
+`a << n` shifts *a* left by *n* bits, filling with zeros. `a >> n` shifts right: with a **constant** count the compiler emits `sar` for signed operands (the sign bit is copied) and `shr` for unsigned operands (zeros are shifted in). Only the low 6 bits of the count are used on x86-64 (5 bits for 32-bit values), as with the hardware instructions.
+
+With a **variable** count the shift is performed by the runtime helpers `__ash_shl` and `__ash_shr`.
+
+@example run ir=main show=src,out,ir title="Shifts by constants and by variables" label=ex-shifts
+@Entry
+pub func main(): int64 {
+    int64 n = 5;
+    int64 m = -64;
+    uint64 u = 0xF000000000000000;
+    printf("%d %d %llx\n", 1 << 5, m >> 5, u >> 4);   // constant counts
+    printf("%d %d\n", 1 << n, m >> n);                // variable counts
+    return 0;
+}
+@end
+
+@warning
+In `ashc` 1.0 the helper `__ash_shr` always performs an *arithmetic* shift, even when the operand is unsigned. A variable right shift of an unsigned value whose top bit is set therefore copies 1-bits into the result. Mask the result (`(u >> n) & mask`) or shift by a constant when the operand may have its top bit set.
+@end
+
+@section{expr-bitwise} Bitwise Operators
+@index bitwise operators; and; or; xor; not
+@table widths=14,40,46 title="Bitwise operators" label=tab-bitwise
+Operator | Meaning | Translation
+`a & b` | 1 where both bits are 1 | ASHIR `and`, x86 `and`
+`a | b` | 1 where at least one bit is 1 | ASHIR `or`, x86 `or`
+`a ^ b` | 1 where the bits differ | ASHIR `xor`, x86 `xor`
+`~a` | Inverts every bit | Rewritten as `a ^ -1`
+@end
+
+@example run title="Flags with bitwise operators" label=ex-flags
+@Entry
+pub func main(): int64 {
+    uint32 READ = 1;
+    uint32 WRITE = 2;
+    uint32 EXEC = 4;
+    uint32 perms = READ | WRITE;        // 3
+    uint32 can_write = perms & WRITE;   // 2
+    perms |= EXEC;                      // 7
+    perms &= ~WRITE;                    // 5: remove WRITE
+    perms ^= READ;                      // 4: toggle READ
+    printf("can_write=%u perms=%u\n", can_write, perms);
+    return 0;
+}
+@end
+
+@section{expr-unary} Unary Operators
+@table widths=16,84 title="Unary operators" label=tab-unary
+Operator | Meaning
+`-a` | Negation. Represented as `0 - a`.
+`+a` | No operation.
+`~a` | Bitwise complement. Represented as `a ^ -1`.
+`&x` | Address of `x`: a variable, an array (the address of its first element), a global, a structure, or a function ([[type-funcptr]]).
+`*p` | Dereference: the value of the type pointed to by `p` at the address `p`.
+`#a` | Number of elements of the array `a` ([[arr-length]]).
+`++x`, `--x` | Increment or decrement `x` and yield the new value.
+`x++`, `x--` | Increment or decrement `x` and yield the old value.
+@end
+
+@example run title="Increment and decrement in expressions" label=ex-incdec
+@Entry
+pub func main(): int64 {
+    int64 i = 5;
+    int64 a = i++;       // a = 5, i = 6
+    int64 b = ++i;       // i = 7, b = 7
+    int64 c = i--;       // c = 7, i = 6
+    printf("%d %d %d %d\n", a, b, c, i);
+    return 0;
+}
+@end
+
+@section{expr-cmp} Comparison Operators
+@index comparison
+The comparison operators `==`, `!=`, `<`, `<=`, `>` and `>=` compare two integers or two addresses. They appear in conditions, where they become a single conditional branch: `brf[a, lt, b, L]` in ASHIR ("branch if false"), and a `cmp` instruction followed by the opposite conditional jump in machine code. Whether `<` uses a signed (`jl`, `jge`) or unsigned (`jb`, `jae`) jump depends on the types of the operands.
+
+@example asm=main show=src,asm title="A comparison is a compare-and-branch" label=ex-cmp-asm
+@Entry
+pub func main(): int64 {
+    int64 a = 3;
+    int64 b = 5;
+    if (a < b) {
+        return 1;
+    }
+    return 0;
+}
+@end
+
+To obtain a comparison result as a number, write it as a condition:
+
+@code ash frag
+int64 a = 3;
+int64 b = 5;
+int64 less = 0;
+if (a < b) { less = 1; }
+@end
+
+@section{expr-call} Function Calls
+A call `f(a1, a2, ...)` evaluates its arguments from left to right, passes them according to the calling convention of the target and yields the return value of the function. A call can appear inside any expression. Calls to functions that are neither defined in ASH nor declared `extern` are treated as calls to external C functions with a variable argument list ([[fn-implicit-extern]]).
+
+@section{expr-const} Constant Folding
+@index constant folding
+The compiler computes at compile time the operators `**` and `***` on constants and every expression used as a global initializer, as a `%define` value or in a `%if` condition. Other constant sub-expressions inside functions are emitted as operations, so `int64 x = 2 + 3;` performs one addition at run time. This keeps ASHIR close to the source; write the folded value yourself where it matters, or use a `define` constant.
+
+@section{expr-summary} Summary of Operators and Their Translation
+@table widths=18,22,60 title="From operator to machine code (x86-64)" label=tab-op-summary
+Operator | ASHIR | Typical instructions
+`+` `-` | `add` `sub` | `add r, r/imm32`, `sub r, r/imm32`
+`*` | `imul` / `mul` | `imul r, r/m`, `imul r, r, imm32`
+`/` `%` | `div` `mod` | `cqo; idiv r` or `xor edx, edx; div r`
+`&` `|` `^` | `and` `or` `xor` | `and`, `or`, `xor`
+`<<` `>>` constant | `shl` `shr` | `shl r, imm8`, `sar r, imm8` / `shr r, imm8`
+`<<` `>>` variable | `call[__ash_shl ...]` | call to the runtime helper
+`**` `***` variable | `call[__ash_pow ...]` | call to the helper
+comparison in a condition | `brf` / `brt` | `cmp` + `jcc`
+`&x` (local) | `addr` | `lea r, [rbp-n]` or the address held by the array variable
+`&f` (function) | `faddr` | `lea r, [rip+f]`
+`*p` read / write | `load` / `store` | `mov r, [r]`, `mov [r], r` (width of the pointed type)
+@end

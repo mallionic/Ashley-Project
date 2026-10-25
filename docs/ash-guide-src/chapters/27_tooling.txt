@@ -1,0 +1,127 @@
+@chapter{ch-tools} Tooling
+@index tooling; VS Code
+This chapter describes the tools that accompany the compiler: the Visual Studio Code extension, the build scripts, the test suite with its emulators, and the utilities used to embed the system libraries.
+
+@section{tool-vscode} The VS Code Extension
+@index linter; snippets
+The directory `vscode-ash/` contains the extension *ASH Language* (version 0.5.0) for Visual Studio Code 1.64 or later, VSCodium and VS Code Insiders. It provides:
+
+- syntax highlighting for `.ash` and `.ashir` files, with a scope for every family of tokens (annotations, control keywords, types by signedness, cracks, nlib and libc functions, numbers with prefixes and suffixes, escapes and format specifiers, assembly mnemonics and registers, directives);
+- two color themes, *ASH Dark* and *ASH Light*, in which every family has its own color;
+- pixel-art file icons for `.ash` and `.ashir` files;
+- 39 snippets;
+- a linter that checks the file while you type, and runs the real compiler when you save.
+
+@subsection Installation
+@code sh
+cd vscode-ash
+./install_extension.sh            # Linux and macOS
+./install_extension.sh --remove   # uninstall
+install_extension.bat             # Windows
+@end
+
+The script installs the extension in every VS Code variant it finds. After restarting the editor, choose a theme with **Ctrl+K Ctrl+T**.
+
+@subsection{tool-lint} The linter
+The linter (`vscode-ash/src/linter.js`) runs inside the editor and needs no compiler. It reads the files you import (`import "x.ash"`, `import <string>`) to know their functions. Problems are underlined in red (errors) or yellow (warnings), and every message explains in English what is wrong and how to fix it.
+
+@table widths=30,70 title="Checks performed by the linter" label=tab-lint
+Check | Examples of what it reports
+Brackets | Unclosed or crossed `{`, `(` and `[`.
+Literals and comments | Unterminated strings, comments and character literals.
+Top-level items | Statements outside a function; a global without `general` / `ungeneral`.
+Constants | Assignment to a global without `static`, or to a `define`.
+Returns | A value returned from a `void` function, `return;` in a function with a result, a missing return, text returned from an integer function.
+Types | Text assigned to an integer, literals out of range, unknown types with a suggestion (`uint46` -> `uint16`).
+Typing mistakes | Unknown words with suggestions: `retrun`, `fucn`, `prinft`, `@Entyr`, `<strng>`, misspelled variables.
+Declarations | Undefined variables, variables declared twice.
+Calls | Wrong number of arguments, more `%d` than values in `printf`, private methods called from outside, unknown cracks.
+`@naked` | Variables, calls, `return` or `{x}` placeholders inside a naked function.
+Control flow | `break` outside a loop, `else` without `if`, `case` outside `switch`, `va_arg` outside a variadic function, code after `return`, `if (x = 3)`.
+@end
+
+On save, the extension also runs `ashc file --elf` (or `--compile` for `@bits(16)` files) with a temporary output file and adds the compiler's errors with the prefix `ashc:`. The command **ASH: Check file (linter + compiler)** (Ctrl+Shift+P) runs both checks on demand.
+
+@table widths=34,12,14,40 title="Settings of the extension" label=tab-vscode-settings
+Setting | Type | Default | Meaning
+`ash.lint.enable` | boolean | true | Check `.ash` files while typing.
+`ash.lint.delay` | number | 250 | Milliseconds to wait after typing before checking.
+`ash.lint.showExternalHints` | boolean | true | Show a hint when an undeclared function will be linked as an external C function.
+`ash.compiler.checkOnSave` | boolean | true | Run `ashc` when the file is saved.
+`ash.compiler.path` | string | `ashc` | Path of the compiler used on save.
+`ash.nlibPath` | string | (empty) | Folder of the nlib libraries; empty means `<workspace>/nlib`.
+@end
+
+@subsection{tool-snippets} Snippets
+Type the prefix and press Tab.
+
+@table widths=20,80 title="Snippets of the extension" label=tab-snippets
+Prefix | Inserts
+`main` | An `@Entry` function.
+`mainargs` | An entry function with `argc` / `argv` and a loop over the arguments (`import <args>`).
+`func`, `pubfunc` | A function; a public function.
+`funcvar` | A variadic function with `va_count()` / `va_arg(i)`.
+`class`, `struct` | A class with a public method; a structure.
+`crack` | A crack inside a function.
+`if`, `ifelse`, `ifelif` | Conditional statements.
+`for`, `forarr`, `while`, `repeat`, `loop` | Loops; `forarr` iterates over an array with `#`.
+`switch` | `switch` with `case` and `default`.
+`terminate`, `terminatefor` | `terminate` statements; a search loop that leaves the function when it finds a value.
+`printf` | A `printf` call.
+`global`, `garray` | A writable global visible to C; a global array with data.
+`array`, `mlstr` | A local array; a triple-quoted string.
+`asm`, `asmv`, `asmop` | An `asm` block; `asm volatile("...")` with placeholders; the GCC operand form.
+`emit`, `runnable` | Raw bytes; a runnable array.
+`@section`, `@beautycode`, `@bits`, `@naked` | Annotations.
+`import`, `extern`, `define`, `%if` | Imports, external declarations, constants, directives.
+@end
+
+@subsection Changing colors
+The theme colors are generated by `vscode-ash/themes/gen_themes.py` (one line per rule, with a dark and a light color); edit it and run `python3 themes/gen_themes.py`. Without touching the extension, a rule can be overridden in `settings.json`:
+
+@code text nocheck
+"editor.tokenColorCustomizations": {
+  "textMateRules": [
+    { "scope": "storage.type.annotation.entry.ash",
+      "settings": { "foreground": "#00FF88", "fontStyle": "bold" } }
+  ]
+}
+@end
+
+The command *Developer: Inspect Editor Tokens and Scopes* shows the scope of any word. The icons are drawn pixel by pixel in `vscode-ash/icons/make_icons.py`.
+
+@section{tool-build} Build Scripts
+`build.sh` and `build.bat` build the compiler; their commands are listed in [[tab-build-cmds]]. Before compiling, both run `java tools/EmbedNlib.java nlib Builder/ash/NlibEmbedded.java`, which turns every file of `nlib/` into a Java string constant, so that the native executable needs no resource files and no reflection.
+
+@section{tool-tests} The Test Suite
+The directory `tests/` contains small programs, one per feature, and helper scripts:
+
+@table widths=34,66 title="Contents of tests/" label=tab-tests
+Path | Purpose
+`tests/*.ash` | Programs for individual features (arrays, cracks, globals, shifts, strict mode, variadics ...). `tests/run.sh file.ash` compiles, links and runs one of them.
+`tests/strict_bad_*.ash` | Programs that must fail in strict mode with a `strict:` error; `strict_ok_use.ash` must compile.
+`tests/class_priv_error.ash`, `tests/global_without_general_error.ash` | Programs that must be rejected.
+`tests/bits16/` | 16-bit programs and `emu16.py`, an 8086 emulator built on the Unicorn engine: it loads a flat image at the origin, calls it and prints `AX`.
+`tests/bits32/` | 32-bit flat programs, `emu32.py` (prints `EAX`) and `emu_vga.py` (also prints the VGA text buffer at `0xB8000`).
+`tests/asm/` | Assembly in 32 and 64-bit programs (Linux system calls).
+`tests/objects/` | Object files linked with C: ASH called from C, C called from ASH, programs without libc.
+@end
+
+The emulators need the Python package `unicorn` (`pip install unicorn`):
+
+@code sh
+ashc tests/bits16/fib_loops_arrays.ash --compile
+python3 tests/bits16/emu16.py tests/bits16/out/fib_loops_arrays.bin 0x100
+@end
+
+@section{tool-manual} Building This Manual
+This manual is generated from the sources in `docs/ash-guide-src/` by `build_guide.py`, which compiles and runs every example with the real compiler. To rebuild it:
+
+@code sh
+pip install reportlab pygments unicorn       # once
+python3 docs/ash-guide-src/build_guide.py    # writes docs/ash-guide.pdf
+python3 docs/ash-guide-src/build_guide.py --only 25   # preview one chapter
+python3 docs/ash-guide-src/set_logo.py my_logo.png    # replace the logo and rebuild
+@end
+
+Results of compilations are cached in `docs/ash-guide-src/.cache/`, keyed by the source of each example and the compiler binary, so a rebuild after editing text takes seconds; a new compiler binary re-runs every example.

@@ -1,0 +1,285 @@
+@chapter{ch-basics} Programming Basics
+@index beginners; basics
+This chapter is for readers who have never programmed, or who want a refresher of the basic ideas. It explains what a computer does with a program, how numbers and text are stored, what a compiler is, and the words used in the rest of this manual. Every idea is shown with a small ASH program. If you already program in another language, you can skim this chapter and continue with [[ch-start]].
+
+@section{bas-computer} What a Computer Does
+A computer has two main parts that matter to a programmer:
+
+- The **processor** (CPU) executes *instructions*: very small steps such as "add these two numbers", "copy this value", "jump to that instruction if the result was zero". A modern processor executes billions of them per second.
+- The **memory** (RAM) stores numbers. It is a long row of cells called *bytes*; each byte has a number called its **address**, starting from 0. Both the instructions of a program and its data live in memory.
+
+The processor also has a few very fast storage places of its own, called **registers** (`rax`, `rbx`, `rcx` ... on x86 processors). Calculations happen in registers; values travel between memory and registers.
+
+A **program** is a list of instructions in memory. Writing those instructions directly as numbers is possible but very hard. A **programming language** such as ASH lets you describe what you want in words and symbols, and a **compiler** translates that description into processor instructions.
+
+@section{bas-bits} Bits, Bytes and Numbers
+@index bit; byte; binary; hexadecimal
+@subsection Bits and bytes
+A **bit** is the smallest piece of information: 0 or 1. Eight bits form a **byte**, which can hold 2^8 = 256 different values, from 0 to 255. Larger numbers use several bytes: 2 bytes (16 bits), 4 bytes (32 bits) or 8 bytes (64 bits). The more bits, the larger the numbers that fit:
+
+@table widths=20,20,30,30 title="How many values fit in N bits" label=tab-bits-values
+Bits | Bytes | Unsigned range | Signed range
+8 | 1 | 0 to 255 | -128 to 127
+16 | 2 | 0 to 65 535 | -32 768 to 32 767
+32 | 4 | 0 to 4 294 967 295 | about -2.1 to 2.1 billion
+64 | 8 | 0 to about 1.8 * 10^19 | about -9.2 to 9.2 * 10^18
+@end
+
+In ASH you choose the size of every number you store, with types such as `uint8` (an unsigned number of 8 bits) or `int64` (a signed number of 64 bits). [[ch-types]] lists them all.
+
+@subsection Binary and hexadecimal
+Computers count in **binary** (base 2): the number 13 is `1101` in binary, because 13 = 8 + 4 + 1. Binary numbers are long, so programmers often use **hexadecimal** (base 16), which uses the digits `0`-`9` and the letters `A`-`F` (10 to 15). One hexadecimal digit is exactly four bits, so a byte is always two hexadecimal digits: 255 is `FF`, 16 is `10`, 13 is `0D`. In ASH a hexadecimal number is written with the prefix `0x`: `0xFF`.
+
+@example run title="The same numbers in three bases" label=ex-bas-bases
+import <string>;
+
+@Entry
+pub func main(): int64 {
+    uint8[65] text;
+    int64[] numbers = {13, 100, 255, 4096};
+    for (int64 i = 0; i < #numbers; i++) {
+        int64 n = numbers[i];
+        printf("decimal %5d = hexadecimal %4s", n, uint_to_str(n, &text, 16));
+        printf(" = binary %s\n", uint_to_str(n, &text, 2));
+    }
+    printf("0xFF is %d and 0x10 is %d\n", 0xFF, 0x10);
+    return 0;
+}
+@end
+
+@gen powers_table x
+
+@subsection Negative numbers
+Signed types store negative numbers in **two's complement**: -1 is "all bits set", -2 is all bits except the lowest, and so on. You rarely need to think about this, but it explains why an unsigned byte with all bits set reads as 255 while a signed byte with the same bits reads as -1:
+
+@example run title="One bit pattern, two meanings" label=ex-bas-twos
+@Entry
+pub func main(): int64 {
+    uint8 u = 0xFF;          // the bits 11111111
+    int8 s = 0;
+    s = s - 1;               // also the bits 11111111
+    int64 wu = u;
+    int64 ws = s;
+    printf("as unsigned: %d   as signed: %d\n", wu, ws);
+    return 0;
+}
+@end
+
+@subsection{bas-text} Text is numbers too
+Each character of text is stored as a number, its **character code**. ASH, like most languages, uses the ASCII codes for the basic characters: `A` is 65, `a` is 97, the digit `0` is 48, a space is 32 and the end of a line is 10. A text (a *string*) is a row of such codes in memory, ended by a byte with the value 0.
+
+@example run title="Characters are numbers" label=ex-bas-chars
+@Entry
+pub func main(): int64 {
+    string word = "Hi!";
+    printf("'%c' has code %d\n", word[0], word[0]);
+    printf("'%c' has code %d\n", word[1], word[1]);
+    printf("'%c' has code %d\n", word[2], word[2]);
+    printf("the byte after the text is %d\n", word[3]);
+    printf("'A' + 1 is '%c'\n", 'A' + 1);
+    return 0;
+}
+@end
+
+@gen ascii_table x
+
+@section{bas-compile} From Source Code to a Running Program
+@index source code; compiler; linker
+The text you write is called **source code**. It is stored in a file whose name ends in `.ash`. Several tools turn it into a program:
+
+@flow title="From source code to a running program" label=fig-bas-flow
+hello.ash | The source code you write, in a text editor. | data
+ashc (the compiler) | Checks the program, reports mistakes, and translates it into machine instructions.
+out/hello.o | An *object file*: machine code that still has unresolved references (for example to `printf`). | data
+gcc or ld (the linker) | Joins your object file with libraries such as the C library, and resolves the references.
+hello | An *executable*: a complete program that the operating system can run. | out
+./hello | The operating system loads it into memory and the processor executes its instructions. | out
+@end
+
+If the compiler finds a mistake, it prints an **error message** and produces no object file. Reading error messages is a normal part of programming; [[ch-diag]] explains the common ones.
+
+@section{bas-anatomy} The Parts of an ASH Program
+Here is a small but complete program. The table after it explains every line.
+
+@example run title="A complete program, explained" label=ex-bas-anatomy
+// A program that adds the numbers from 1 to 10
+func add_up_to(int64 limit): int64 {
+    int64 total = 0;
+    for (int64 n = 1; n <= limit; n++) {
+        total = total + n;
+    }
+    return total;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 result = add_up_to(10);
+    printf("1 + 2 + ... + 10 = %d\n", result);
+    return 0;
+}
+@end
+
+@table widths=8,40,52 title="Line by line" label=tab-bas-lines
+Line | Code | Explanation
+1 | `// A program that ...` | A **comment**: text for people. The compiler ignores everything after `//` on the line.
+2 | `func add_up_to(int64 limit): int64 {` | Starts a **function** named `add_up_to`. It receives one value, called `limit`, of type `int64`, and gives back (*returns*) an `int64`. The `{` opens the function's **body**.
+3 | `int64 total = 0;` | Creates a **variable** named `total` that holds an `int64`, starting at 0. The `;` ends the **statement**.
+4 | `for (int64 n = 1; n <= limit; n++) {` | A **loop**: create `n` with the value 1; while `n <= limit`, run the body; after each run, add 1 to `n` (`n++`).
+5 | `total = total + n;` | Takes the current `total`, adds `n`, and stores the result back in `total`.
+6 | `}` | Closes the loop body.
+7 | `return total;` | Ends the function and gives `total` back to whoever called it.
+8 | `}` | Closes the function.
+9 | (empty) | Blank lines only make the code easier to read.
+10 | `@Entry` | An **annotation**: the next function is where the program starts.
+11 | `pub func main(): int64 {` | The function `main`. `pub` makes it visible to the operating system's start-up code. It receives nothing (empty parentheses) and returns an `int64`.
+12 | `int64 result = add_up_to(10);` | **Calls** `add_up_to` with the value 10 and stores what it returns in `result`.
+13 | `printf("... %d\n", result);` | Prints a text. `%d` is replaced by the value of `result`, and `\n` ends the line.
+14 | `return 0;` | Returns 0 from `main`, which tells the operating system that the program succeeded.
+15 | `}` | Closes `main`.
+@end
+
+@section{bas-words} Words You Will Meet
+@table widths=24,76 title="Basic vocabulary" label=tab-bas-vocab
+Word | Meaning
+statement | One instruction of the program, usually ended by `;`: a declaration, an assignment, a call, an `if`, a loop...
+expression | Something that produces a value: `3`, `x`, `x + 1`, `square(4)`.
+variable | A named place in memory that holds a value of a given type. Its value can change.
+type | What kind of value a variable holds and how many bytes it uses: `int64`, `uint8`, `string`...
+literal | A value written directly in the code: `42`, `0xFF`, `'A'`, `"text"`.
+operator | A symbol that combines values: `+`, `-`, `*`, `/`, `==`, `<`...
+function | A named group of statements that receives values (*parameters*), does some work and may return a value.
+call | Running a function: `square(4)`.
+argument | A value given to a function in a call (`4` in `square(4)`).
+parameter | The name, inside a function, that receives an argument (`x` in `func square(int64 x)`).
+return value | The value a function gives back with `return`.
+block | Statements between `{` and `}`.
+condition | A question that is true or false, used by `if` and loops: `x > 3`.
+loop | A statement that repeats a block: `while`, `for`, `repeat`, `loop`.
+array | A row of values of the same type, accessed by position: `v[0]`, `v[1]`...
+string | A text.
+pointer | A variable that holds a memory address.
+library | A collection of ready-made functions that a program can use, brought in with `import`.
+compiler | The program that translates source code into machine code (`ashc`).
+@end
+
+@section{bas-errors} Two Kinds of Mistakes
+**Compile-time errors** are found by the compiler before the program runs: a misspelled name, a missing `}`, a number too big for its type. The compiler tells you the problem, often with the line, and no program is produced.
+
+@example fail title="A compile-time error: a misspelled variable"
+@Entry
+pub func main(): int64 {
+    int64 total = 5;
+    printf("%d\n", totl);
+    return 0;
+}
+@end
+
+**Run-time errors** happen while the program runs: dividing by zero, using a position outside an array. ASH stops the program in a controlled way when an array position is wrong:
+
+@example run expect=134 title="A run-time error: a position outside an array" label=ex-bas-runtime
+@Entry
+pub func main(): int64 {
+    int64[] v = {10, 20, 30};
+    printf("v[2] = %d\n", v[2]);     // positions 0, 1 and 2 exist
+    fflush(0);
+    printf("v[3] = %d\n", v[3]);     // there is no position 3: the program stops
+    return 0;
+}
+@end
+
+The program stopped with exit status 134 at the wrong position, before the second line could be printed.
+
+@section{bas-exercises} Exercises
+Try to write each program yourself before reading the solution. Every solution was compiled and run.
+
+@subsection Exercise 1: multiplication table
+Print the multiplication table of 7, from 7 x 1 to 7 x 10.
+
+@example run title="Solution 1" label=ex-bas-sol1
+@Entry
+pub func main(): int64 {
+    for (int64 i = 1; i <= 10; i++) {
+        printf("7 x %2d = %2d\n", i, 7 * i);
+    }
+    return 0;
+}
+@end
+
+@subsection Exercise 2: even or odd
+Write a function `is_even` that returns 1 for even numbers and 0 for odd numbers, and print the result for 0 to 5.
+
+@example run title="Solution 2" label=ex-bas-sol2
+func is_even(int64 n): int64 {
+    if (n % 2 == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    for (int64 n = 0; n <= 5; n++) {
+        if (is_even(n) == 1) {
+            printf("%d is even\n", n);
+        } else {
+            printf("%d is odd\n", n);
+        }
+    }
+    return 0;
+}
+@end
+
+@subsection Exercise 3: largest value
+Find the largest value of the array `{4, 19, 7, 23, 11}`.
+
+@example run title="Solution 3" label=ex-bas-sol3
+@Entry
+pub func main(): int64 {
+    int64[] values = {4, 19, 7, 23, 11};
+    int64 largest = values[0];
+    for (int64 i = 1; i < #values; i++) {
+        if (values[i] > largest) {
+            largest = values[i];
+        }
+    }
+    printf("the largest value is %d\n", largest);
+    return 0;
+}
+@end
+
+@subsection Exercise 4: counting letters
+Count how many times the letter `a` appears in the text "banana and papaya".
+
+@example run title="Solution 4" label=ex-bas-sol4
+@Entry
+pub func main(): int64 {
+    string text = "banana and papaya";
+    int64 count = 0;
+    int64 i = 0;
+    while (text[i] != 0) {          // a text ends with the code 0
+        if (text[i] == 'a') {
+            count++;
+        }
+        i++;
+    }
+    printf("'a' appears %d times\n", count);
+    return 0;
+}
+@end
+
+@subsection Exercise 5: temperature conversion
+Print a table that converts Celsius degrees from -10 to 40, in steps of 10, to Fahrenheit (F = C * 9 / 5 + 32).
+
+@example run title="Solution 5" label=ex-bas-sol5
+func to_fahrenheit(int64 c): int64 {
+    return c * 9 / 5 + 32;
+}
+
+@Entry
+pub func main(): int64 {
+    for (int64 c = -10; c <= 40; c = c + 10) {
+        printf("%4d C = %4d F\n", c, to_fahrenheit(c));
+    }
+    return 0;
+}
+@end

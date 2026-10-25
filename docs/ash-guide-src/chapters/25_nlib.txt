@@ -1,0 +1,235 @@
+@chapter{ch-nlib} The nlib System Library
+@index nlib; library
+`nlib` is the set of libraries that ships with ASH. The libraries are ordinary ASH source files, embedded in the compiler and imported with `import <name>;`. This chapter documents every library and every function: what it does, its parameters and result, its implementation, an example executed while this manual was built, and the machine code that the compiler generates for it.
+
+@section{nlib-overview} Overview
+@table widths=16,22,62 title="Libraries of nlib" label=tab-nlib
+Library | Needs libc | Contents
+`<string>` | no | Memory and string functions, character classification, number/text conversion.
+`<math>` | no | Integer mathematics and Q16.16 fixed-point arithmetic and trigonometry, without an FPU.
+`<syscalls>` | no | Linux x86-64 system calls and simple output, without the C library.
+`<args>` | yes | Command line arguments.
+`<delay>` | yes | Sleeping for milliseconds or microseconds.
+`<stdio>` | yes | Typed declarations of the C standard I/O functions.
+`<stdlib>` | see [[nlib-stdlib]] | Wrappers of C standard library functions.
+`<types>` | no | IEEE-754 infinity and NaN bit patterns.
+`<stdbool>` | no | `true`, `false`, `TRUE`, `FALSE`.
+`<null>` | no | `NULL`, `null`, `nil`, `NIL`.
+@end
+
+The libraries marked "no" in the second column use no C function at all: they work with `--no-libc`, in flat binaries and on bare metal. Thanks to tree shaking ([[mod-shake]]), only the functions a program uses end up in its object file.
+
+@subsection{nlib-conventions} Conventions
+- Strings and memory are passed as raw byte pointers (`uint8*`). A string literal, the address of a buffer (`&buf`), memory returned by C and memory-mapped hardware can all be passed. No function of `<string>` checks bounds or allocates memory: the caller provides buffers of sufficient size.
+- Search functions return an **index** (or -1), not a pointer.
+- Predicates return `1` or `0`.
+- A function of your program with the same name as an nlib function replaces it, because nlib functions have override right -1 ([[mod-override]]).
+- Function names that begin with `__` are internal helpers of a library and are not documented here.
+
+@section{nlib-string} <string>: Strings and Memory
+@index <string>
+`import <string>;` provides 38 functions in six groups: memory (`memset`, `memcpy`, `memmove`, `memcmp`, `memchr`), length (`strlen`, `strnlen`), copying (`strcpy`, `strncpy`, `strcat`, `strncat`), comparison (`strcmp`, `strncmp`, `strcasecmp`), searching (`strchr`, `strrchr`, `strstr`, `strspn`, `strcspn`), characters (`isdigit` ... `tolower`), conversion (`str_to_int`, `atoi`, `uint_to_str`, `int_to_str`) and utilities (`str_reverse`, `str_upper`, `str_lower`, `str_equals`, `str_starts`, `str_ends`).
+
+Several names coincide with C library functions. When `<string>` is imported, the ASH versions are used, which means a program can do text processing without the C library. Note the two differences from C: `memchr`, `strchr`, `strrchr` and `strstr` return indices, and none of the functions allocates memory.
+
+@gen nlib string
+
+@section{nlib-math} <math>: Integer and Fixed-Point Mathematics
+@index <math>; fixed point; Q16.16
+`import <math>;` provides integer functions and Q16.16 fixed-point arithmetic. The library never uses the FPU or SSE, so it is suitable for kernels, boot loaders and firmware.
+
+@subsection{nlib-q16} The Q16.16 format
+A Q16.16 number is a 64-bit integer that represents the value *n* / 65536: the low 16 bits are the fraction and the rest is the integer part. 1.0 is 65536 (`FX_ONE`), 0.5 is 32768, and pi is 205887. Addition and subtraction work directly on the integers; multiplication and division need a correction by 65536, which `fx_mul` and `fx_div` apply. Angles of the trigonometric functions are in radians, also in Q16.16; `fx_deg` converts whole degrees.
+
+@gen nlib_constants math
+
+@gen nlib math
+
+@section{nlib-syscalls} <syscalls>: Linux System Calls without libc
+@index <syscalls>; system call
+`import <syscalls>;` gives direct access to the Linux x86-64 kernel through the `syscall` instruction. It needs no C library: programs that use only `<syscalls>`, `<string>` and `<math>` can be built with `--no-libc` and linked with `ld` alone ([[tgt-nolibc]]). Every function returns what the kernel returns: a non-negative value on success, or a negative error number (-errno) on failure.
+
+@gen nlib_constants syscalls
+
+@gen nlib syscalls
+
+@section{nlib-args} <args>: Command Line Arguments
+@index <args>; argc; argv
+`import <args>;` helps to read the arguments of the program. The entry function must receive them: `pub func main(int64 argc, int64 argv): int64` ([[fn-entry]]). `arg_equals` and `arg_int` call the C functions `strcmp` and `atoi`, so this library requires the C library.
+
+@example run args="-v 42 hello" title="Every function of <args>" label=ex-args-all
+import <args>;
+
+@Entry
+pub func main(int64 argc, int64 argv): int64 {
+    for (int64 i = 1; i < argc; i++) {
+        printf("arg_at(argv, %d) = %s\n", i, arg_at(argv, i));
+    }
+    printf("arg_equals(argv, 3, \"hello\") = %d\n", arg_equals(argv, 3, "hello"));
+    printf("arg_int(argv, 2) = %d\n", arg_int(argv, 2));
+    printf("arg_has(argc, argv, \"-v\") = %d\n", arg_has(argc, argv, "-v"));
+    printf("arg_has(argc, argv, \"-q\") = %d\n", arg_has(argc, argv, "-q"));
+    return 0;
+}
+@end
+
+The example was run as `./program -v 42 hello`.
+
+@gen nlib args
+
+@section{nlib-delay} <delay>: Pauses
+@index <delay>
+`import <delay>;` provides two functions built on the C library's `usleep`. In programs without the C library use `sys_nanosleep` from `<syscalls>`.
+
+@gen nlib delay
+
+@section{nlib-stdio} <stdio>: C Standard Input and Output
+@index <stdio>; printf; fopen
+`import <stdio>;` declares the functions of the C header `<stdio.h>` with ASH types, so that calls are checked and arguments are passed with the declared widths. It contains no ASH code: the functions are those of the C library linked with the program. Streams (`FILE*`) are handled as `void*` values.
+
+@note
+The C functions can also be called without importing `<stdio>`, as implicit external functions ([[fn-implicit-extern]]). Importing the library documents the program and enables argument checking. Because the library declares `tmpnam` and `tempnam`, the GNU linker prints a warning about them when `<stdio>` is imported; the warning is harmless.
+@end
+
+@example run title="Writing and reading a file with <stdio>" label=ex-stdio-file
+import <stdio>;
+
+@Entry
+pub func main(): int64 {
+    void* f = fopen("/tmp/ash_guide_stdio.txt", "w");
+    fprintf(f, "line %d\n", 1);
+    fputs("line 2\n", f);
+    fclose(f);
+
+    uint8[64] line;
+    f = fopen("/tmp/ash_guide_stdio.txt", "r");
+    while (fgets(&line, 64, f) != 0) {
+        printf("read: %s", &line);
+    }
+    fseek(f, 0, 2);
+    printf("size: %d bytes\n", ftell(f));
+    fclose(f);
+    remove("/tmp/ash_guide_stdio.txt");
+    return 0;
+}
+@end
+
+@example run title="Formatting into buffers: snprintf and sscanf" label=ex-stdio-fmt
+import <stdio>;
+
+@Entry
+pub func main(): int64 {
+    uint8[64] buf;
+    snprintf(&buf, 64, "%s-%04d-%x", "ASH", 42, 255);
+    puts(&buf);
+    int64 a = 0;
+    int64 b = 0;
+    int64 n = sscanf("12 34", "%ld %ld", &a, &b);
+    printf("sscanf matched %d values: %d + %d = %d\n", n, a, b, a + b);
+    return 0;
+}
+@end
+
+@example run stdin="Ada\n" title="Reading standard input" label=ex-stdio-stdin
+import <stdio>;
+
+@Entry
+pub func main(): int64 {
+    uint8[32] name;
+    printf("Your name? ");
+    scanf("%31s", &name);
+    printf("Hello, %s!\n", &name);
+    return 0;
+}
+@end
+
+@example run title="Running a command with popen" label=ex-stdio-popen
+import <stdio>;
+
+@Entry
+pub func main(): int64 {
+    void* p = popen("echo 'from a shell command'", "r");
+    uint8[128] line;
+    while (fgets(&line, 128, p) != 0) {
+        printf("got: %s", &line);
+    }
+    printf("status: %d\n", pclose(p));
+    return 0;
+}
+@end
+
+@gen stdio_table x
+
+@section{nlib-stdlib} <stdlib>: C Standard Library Wrappers
+@index <stdlib>
+`<stdlib>` defines `NULL`, `RAND_MAX`, `EXIT_SUCCESS` and `EXIT_FAILURE`, and wraps the functions of `<stdlib.h>`: each wrapper `f` calls an external function named `__stlib_f`.
+
+@warning
+In ASH 1.0 the `__stlib_*` functions are not provided by any library, so a program that imports `<stdlib>` cannot be linked ("undefined reference to `__stlib_malloc`" and so on). Until a shim library is supplied, **do not import `<stdlib>`**: call the C functions directly, as implicit externs or with your own `extern` declarations, as in the examples below. The constants can be defined with `define` in your own program.
+@end
+
+@example run title="Using C standard library functions directly" label=ex-stdlib-direct
+extern void* malloc(uint64 size);
+extern void free(void* p);
+extern int64 strtol(string s, void* end, int64 base);
+extern string getenv(string name);
+extern void srand(uint32 seed);
+extern int32 rand();
+
+@Entry
+pub func main(): int64 {
+    int64* p = malloc(4 * 8);
+    p[0] = 10; p[1] = 20; p[2] = 30; p[3] = 40;
+    printf("sum=%d\n", p[0] + p[1] + p[2] + p[3]);
+    free(p);
+    printf("strtol: %d %d\n", strtol("ff", 0, 16), strtol("-1010", 0, 2));
+    string home = getenv("HOME");
+    if (home != 0) {
+        printf("HOME is set\n");
+    }
+    srand(42);
+    int32 r = rand();
+    if (r >= 0) {
+        printf("rand returned a non-negative number\n");
+    }
+    return 0;
+}
+@end
+
+@gen stdlib_table x
+
+@section{nlib-types} <types>: Floating-Point Special Values
+@index <types>; infinity; NaN
+`import <types>;` provides functions that return IEEE-754 double-precision special values as bit patterns. Because floating-point support is limited in ASH 1.0 ([[type-float]]), these values can be stored in `double` variables and passed to C, but not converted to integers or used in arithmetic.
+
+@gen nlib types
+
+@section{nlib-stdbool} <stdbool> and <null>: Constants
+@index <stdbool>; <null>; NULL
+`<stdbool>` defines the boolean constants with `define`. `true` and `false` are also predefined by the compiler with right -1, so importing `<stdbool>` is only needed for the uppercase forms.
+
+@gen nlib_constants stdbool
+
+@example run title="Boolean constants" label=ex-stdbool
+import <stdbool>;
+
+@Entry
+pub func main(): int64 {
+    bool done = FALSE;
+    int64 n = 0;
+    while (done == FALSE) {
+        n++;
+        if (n == 3) { done = TRUE; }
+    }
+    printf("n=%d TRUE=%d FALSE=%d\n", n, TRUE, FALSE);
+    return 0;
+}
+@end
+
+`<null>` defines the null pointer constant under five names:
+
+@gen nlib_constants null
+
+@warning
+In ASH 1.0, `import <null>;` fails, because the macro `null` defined by the library rewrites the name of the import itself. Define the constant yourself (`define NULL 0;`) or compare pointers with 0.
+@end

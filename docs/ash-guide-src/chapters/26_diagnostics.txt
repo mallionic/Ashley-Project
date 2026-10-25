@@ -1,0 +1,278 @@
+@chapter{ch-diag} Diagnostics Reference
+@index diagnostics; error messages
+This chapter lists the diagnostics that `ashc` prints most often, grouped by the stage that detects them. For each one it shows a program that triggers it, the message, the cause and the fix. Messages that `ashc` 1.0 prints in Spanish are shown translated, and the box says so.
+
+@section{diag-reading} Reading a Diagnostic
+A diagnostic consists of a class (`error`, `warning`, `tip`, `internal compiler error`), an optional position (`<input>:line:column:` for errors found by the parser), the message, and for parser errors the offending line with a marker. When the compiler knows a likely fix it prints a `tip` line after the error. The build ends with a summary such as `1 error generated.` See [[cli-diag]] for the colors and classes.
+
+@section{diag-lex} Lexical Errors
+@subsection Unexpected character
+@example fail
+@Entry
+pub func main(): int64 {
+    int64 $price = 3;
+    return 0;
+}
+@end
+**Cause.** A character that cannot start any token, here `$`. **Fix.** Identifiers contain only letters, digits and underscores ([[lex-idents]]).
+
+@subsection Unterminated string
+@example fail
+@Entry
+pub func main(): int64 {
+    printf("missing quote\n);
+    return 0;
+}
+@end
+**Cause.** A string literal that reaches the end of the line. **Fix.** Close the string, or use a triple-quoted string for text that spans lines.
+
+@section{diag-parse} Syntax Errors
+@subsection Unexpected statement
+@example fail
+@Entry
+pub func main(): int64 {
+    int64 i = 0;
+    do {
+        i++;
+    } while (i < 3);
+    return i;
+}
+@end
+**Cause.** A word that does not start any ASH statement; here `do`, which ASH does not have. **Fix.** Use `loop { ... if (...) { break; } }` ([[cf-while]]).
+
+@subsection Missing brace
+@example fail
+@Entry
+pub func main(): int64 {
+    int64 x = 5;
+    if (x > 3) printf("big\n");
+    return 0;
+}
+@end
+**Cause.** The body of `if`, `while` and other statements must be a block in braces. **Fix.** Write `if (x > 3) { printf("big\n"); }`.
+
+@subsection Expected func, class, extern or import
+@example fail
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+x = 3;
+@end
+**Cause.** A statement at top level, outside any function. **Fix.** Move it into a function, or declare a global variable with `general` / `ungeneral` ([[var-global]]).
+
+@subsection Annotation errors
+@example fail
+@Entry
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+**Cause.** Two `@Entry` annotations. **Fix.** A program has exactly one entry point.
+
+@example fail
+@Inline
+func f(): int64 {
+    return 1;
+}
+
+@Entry
+pub func main(): int64 {
+    return f();
+}
+@end
+**Cause.** An annotation that is neither built in nor defined by the program. **Fix.** Check the spelling against [[tab-annotations]] or define the annotation ([[ann-user]]).
+
+@section{diag-sem} Semantic Errors
+@subsection Undeclared variable
+@example fail translate="error: undeclared variable: totl\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    totl = 5;
+    return total;
+}
+@end
+**Cause.** A name used without declaration, often a typing mistake. **Fix.** Declare the variable or correct the name.
+
+@subsection Global without visibility
+@example fail
+uint64 total = 0
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+**Cause.** A global must say who can see it. **Fix.** Write `general` or `ungeneral`, plus `static` if it changes ([[var-global]]).
+
+@subsection Assignment to a constant global
+@example fail translate="error: the global 'LIMIT' is not static (it is a constant): declare it 'static uint32 LIMIT' to be able to change it\n1 error generated."
+general uint32 LIMIT = 1000
+
+@Entry
+pub func main(): int64 {
+    LIMIT = 5;
+    return 0;
+}
+@end
+**Cause.** Globals without `static` are constants. **Fix.** Declare it `general static uint32 LIMIT = 1000`.
+
+@subsection Literal out of range
+@example fail translate="error: the value 300 does not fit in 8 bits (allowed range: -128..255)\n1 error generated."
+@Entry
+pub func main(): int64 {
+    uint8 small = 300;
+    return small;
+}
+@end
+**Cause.** The literal does not fit in the type. **Fix.** Use a wider type, or a value in range.
+
+@subsection Private method
+@example fail
+class Vault {
+    priv func secret(): int64 { return 7; }
+}
+
+@Entry
+pub func main(): int64 {
+    return Vault.secret();
+}
+@end
+**Cause.** A `priv` method called from outside its class. **Fix.** Make it `pub`, or call it through a public method of the class ([[cls-priv]]).
+
+@subsection Too many variadic arguments
+@example fail
+func sum(int64 base, ...): int64 {
+    return base;
+}
+
+@Entry
+pub func main(): int64 {
+    return sum(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+}
+@end
+**Cause.** ASH variadic functions accept at most eight extra arguments. **Fix.** Pass an array instead.
+
+@subsection Comparison used as a value
+@example fail
+@Entry
+pub func main(): int64 {
+    int64 a = 3;
+    int64 b = 5;
+    int64 less = a < b;
+    return less;
+}
+@end
+**Cause.** Comparisons belong to conditions ([[expr-cmp]]). **Fix.** `int64 less = 0; if (a < b) { less = 1; }`.
+
+@subsection Constant expression too large
+@example fail translate="<input>:3:22: error: the result of '**' does not fit in 64 bits: 18446744073709551616\n    3 | ;\n      |                      ^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    int64 x = 2 ** 64;
+    return 0;
+}
+@end
+**Cause.** A constant power whose value needs more than 64 bits. **Fix.** Reduce the exponent.
+
+@subsection Division by a constant zero
+@example fail
+@Entry
+pub func main(): int64 {
+    int64 x = 7 / 0;
+    return x;
+}
+@end
+**Cause.** Division by the literal 0. **Fix.** Correct the divisor; division by a variable that is zero at run time raises `SIGFPE` instead.
+
+@subsection Matrix rows of different length
+@example fail translate="<input>:7:5: error: matrix 'm': row 2 (line 5) has 1 elements and the first one has 2\n    7 | return\n      |     ^^^^^^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    matrix m[] []{
+        [int32 1], [int32 2],
+        [int32 3],
+    }
+    return 0;
+}
+@end
+**Cause.** Every row of a `matrix` literal needs the same number of elements. **Fix.** Complete the short row.
+
+@section{diag-mod} Module Errors
+@subsection Unknown library
+@example fail translate="error: library <graphics> was found neither in nlib (nlib) nor embedded. Available: [args.ash, delay.ash, math.ash, null.ash, stdbool.ash, stdio.ash, stdlib.ash, string.ash, syscalls.ash, types.ash]\n1 error generated."
+import <graphics>;
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+**Cause.** No `graphics.ash` in an `nlib` directory or in the embedded libraries. **Fix.** Run `ashc --list-nlib` to see the available names, or use `import "file.ash";` for project files.
+
+@subsection Ambiguous definitions
+Two imported files that define the same function with the same right produce an error ([[mod-override]]); give one of them a higher right with `@ovr[N]` or `name.override = N;`.
+
+@section{diag-pp} Directive Errors
+@example fail
+%if ASH_BITS == 64
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+**Cause.** An `%if` without `%endif`. **Fix.** Close every conditional block.
+
+@example fail
+%iff ASH_BITS == 64
+%endif
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+**Cause.** An unknown directive. **Fix.** See [[tab-directives]].
+
+@section{diag-strict} Strict Mode Errors
+The five errors of strict mode are shown with their causes in [[strict-examples]].
+
+@section{diag-cli} Command Line Errors
+@file hello.ash
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+@session
+$ ashc missing.ash --elf # fails
+$ ashc hello.ash --elf --win # fails
+$ ashc hello.ash --bits 48 # fails
+@end
+
+
+@section{diag-link} Errors Reported by the Linker
+Some problems are found only when the object file is linked. They are reported by `ld` or `gcc`, not by `ashc`:
+
+@table widths=40,60 title="Common link errors" label=tab-link-errors
+Message | Cause and fix
+`undefined reference to 'main'` | The entry function is called `_start` but the program was linked with the C start-up files. Rename it `main`, or rename the symbol with `objcopy --redefine-sym _start=main` ([[start-entry]]).
+`multiple definition of '_start'` | The same situation seen from the other side: both the C start-up files and the object define `_start`.
+`undefined reference to 'f'` | A function that is called but not defined: a missing `extern` library (`-lasound`, `-lm` ...), or a C function used with `--no-libc`.
+`undefined reference to 'exit'` with `--no-libc` | A program without arrays calls `exit`; use `sys_exit` ([[tgt-nolibc]]).
+`undefined reference to '__stlib_malloc'` | `<stdlib>` was imported ([[nlib-stdlib]]).
+`warning: ... has a LOAD segment with RWX permissions` | Harmless for ASH programs; silence it with `-Wl,--no-warn-rwx-segments`.
+`relocation R_X86_64_32 against ... can not be used when making a PIE object` | Not produced by ASH objects, which use PC-relative relocations; it can appear when mixing with C objects compiled without `-fPIC`. Link with `-no-pie`.
+@end
+
+@section{diag-runtime} Errors at Run Time
+@table widths=30,70 title="Run-time failures" label=tab-runtime-errors
+Symptom | Cause
+Exit status 134 without a message | An array index out of range, stopped by `__ash_bounds` ([[arr-bounds]]).
+`Segmentation fault` | Writing to a string literal, dereferencing an invalid pointer, a `_start` function that returns, an `asm` block that corrupts `rsp` or a callee-saved register.
+`Floating point exception` | Division or remainder by zero (the processor's divide error).
+The program loops forever | A `continue` inside a `switch` inside a loop ([[cf-break]]).
+Output lost before a crash | `printf` output is buffered; call `fflush(0)` before code that may crash.
+@end

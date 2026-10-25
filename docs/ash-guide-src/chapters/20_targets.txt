@@ -1,0 +1,260 @@
+@chapter{ch-targets} Targets, Runtimes and Interoperability
+@index targets; ABI; interoperability
+This chapter describes each target that `ashc` can produce: what the output contains, which calling convention and runtime it uses, how it is linked and loaded, and how it interoperates with C. It closes with a table of corresponding C and ASH types.
+
+@section{tgt-overview} Overview
+@table widths=24,18,18,40 title="Targets of ashc 1.0" label=tab-targets
+Target | Options | Output | Typical use
+Linux x86-64 object | `--elf` | ELF64 `.o` | Programs and libraries for 64-bit Linux, with or without libc.
+Linux i386 object | `--elf` + `@bits(32)` | ELF32 `.o` | 32-bit programs and libraries, protected-mode kernels.
+Linux i386 executable | `--exe` + `@bits(32)` | ELF32 executable | Small static programs without a linker.
+Windows x64 object | `--win` | COFF `.obj` | Windows programs and DLL code, UEFI applications.
+Windows i386 object | `--win` + `@bits(32)` | COFF `.obj` | 32-bit Windows code.
+Flat binary | `--compile` | raw `.bin` | Boot sectors, real-mode code, firmware, images for custom loaders.
+@end
+
+@section{tgt-linux64} Linux x86-64
+The default target produces an ELF64 relocatable object for the System V AMD64 ABI. Functions declared `pub` and globals declared `general` are global symbols; everything else is local. Code, string literals and global data are in the `.ashtext` section; `@section` creates additional sections ([[arch-writers]]).
+
+@subsection Linking with the C library
+When the entry function is called `main`, link with `gcc out/prog.o -o prog`. Both position-independent (default) and non-PIE (`-no-pie`) executables work. The C start-up code initializes the C library, calls `main` with `argc`, `argv` and `envp`, and passes its result to `exit`.
+
+Because code and writable data share a section, GNU `ld` warns that the executable has a segment with RWX permissions; pass `-Wl,--no-warn-rwx-segments` to silence it. Older linkers may also warn about the absence of `.note.GNU-stack`; `ashc` writes that section, so the stack is not made executable.
+
+@subsection{tgt-nolibc} Without the C library
+@index --no-libc; runtime; mmap; exit_group
+With `--no-libc` (or `@nolibc`) the compiler replaces the three C functions that compiled code may need with its own ASHIR implementations, built on Linux system calls:
+
+@table widths=18,82 title="The built-in --no-libc runtime (x86-64)" label=tab-nolibc-runtime
+Function | Implementation
+`calloc(n, size)` | `mmap(NULL, n*size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)` (system call 9). Anonymous memory is zero-filled by the kernel.
+`free(p)` | Does nothing. Memory returns to the system when the process exits.
+`exit(code)` | `exit_group(code)` (system call 231).
+@end
+
+The program must define `_start` as its entry point and must end with `exit(...)` or `sys_exit(...)`; it is linked with `ld -e _start out/prog.o -o prog` and produces a static executable with no dependencies. Other C functions are not available unless you link an object that provides them.
+
+@warning
+In `ashc` 1.0 the replacement runtime is inserted only when the program also uses arrays, strings or another feature that needs the runtime block ([[arch-generator]]). A `--no-libc` program that calls `exit(...)` but uses no array fails to link with "undefined reference to `exit`". Use `sys_exit(...)` from `<syscalls>`, which never depends on the runtime.
+@end
+
+The `<syscalls>` library ([[nlib-syscalls]]) provides output, files, memory and process functions written directly on system calls.
+
+@example run nolibc ir=calloc,free,exit show=src,out,ir title="The runtime functions inserted by --no-libc" label=ex-nolibc-runtime
+@Entry
+pub func _start(): int64 {
+    int64[] v = {5, 6, 7};
+    int64[2][2] m;
+    m[1][1] = 30;
+    v[1] = v[0] + v[2];
+    exit(v[1] + m[1][1]);       // 12 + 30 = 42
+    return 0;
+}
+@end
+
+@file tiny_static.ash
+import <syscalls>;
+
+@Entry
+pub func _start(): int64 {
+    println("static and tiny");
+    sys_exit(42);
+    return 0;
+}
+@end
+
+@session
+$ ashc tiny_static.ash --elf --no-libc -s
+$ ld -e _start out/tiny_static.o -o tiny_static
+$ ./tiny_static; echo "exit status $?"
+$ ldd tiny_static # fails
+$ ls -l tiny_static
+@end
+
+
+@section{tgt-linux32} Linux i386
+With `@bits(32)` (or `--bits 32`) and `--elf`, the output is an ELF32 object for the i386 architecture. Code is generated for 32-bit protected mode; all integers wider than 32 bits are held in 32 bits ([[type-bits]]). Functions use the `cdecl` convention: arguments are pushed right to left, the caller removes them, the result is in `eax`, and `ebx`, `esi`, `edi`, `ebp` are preserved.
+
+32-bit objects link with the 32-bit C library (`gcc -m32 -no-pie -z noexecstack`), or without any library using `ld -m elf_i386`. The following program is a 32-bit ASH library called from a freestanding C program that has no C library at all:
+
+@code ash file=lib32.ash
+@bits(32)
+
+pub func add3(int32 a, int32 b, int32 c): int32 {
+    int32[] t = {a, b, c};
+    return t[0] + t[1] + t[2];
+}
+
+priv func hidden(): int32 {
+    return 1;
+}
+
+@Entry
+pub func ash_main(): int32 {
+    return add3(1, 2, 3) + hidden();
+}
+@end
+
+@code c file=start32.c
+/* freestanding C: no libc, its own _start */
+int add3(int, int, int);
+int ash_main(void);
+
+void _start(void) {
+    int r = add3(10, 20, 30) + ash_main();          /* 60 + 7 = 67 */
+    __asm__ volatile("int $0x80" :: "a"(1), "b"(r));  /* sys_exit(r) */
+}
+@end
+
+@session
+$ ashc lib32.ash --elf --no-libc -s
+$ gcc -m32 -ffreestanding -fno-pic -fno-stack-protector -c start32.c -o start32.o
+$ ld -m elf_i386 -z noexecstack -e _start start32.o out/lib32.o -o app32
+$ ./app32; echo "exit status $?"
+$ file app32
+@end
+
+@section{tgt-exe} Linux i386 Executables (--exe)
+@index --exe
+`--exe` produces a complete 32-bit Linux executable without a linker. The compiler generates a flat 32-bit image and prepends an 84-byte header: the ELF32 file header (52 bytes) and one program header (32 bytes) describing a single loadable segment with read, write and execute permissions. The segment is loaded at the address given by `@originoffs` (normally `0x08048000`), its memory size includes one extra mebibyte of zero-filled space used by the built-in heap, and the entry point is the first byte after the header, where the `@Entry` function is placed.
+
+There is no C library in such a program; it communicates with the kernel through `int 0x80` ([[ex-asm32]]) and ends with `exit`, which the built-in runtime implements with system call 1.
+
+@example exe run hexdump hexlines=6 show=src,out,hex title="The smallest --exe program and its header" label=ex-exe
+@bits(32)
+@originoffs(0x08048000)
+
+@Entry
+pub func _start(): int32 {
+    exit(7);
+    return 0;
+}
+@end
+
+In the dump, the first line is the ELF identification (`7F 45 4C 46` = "\x7FELF", class 1 = 32-bit, data 1 = little-endian), followed by the type 2 (executable), the machine 3 (i386) and the entry address `0x08048054` (base + 84).
+
+@section{tgt-flat} Flat Binaries
+@index flat binary; --compile; boot sector
+`--compile` writes the machine code of the program followed by its data, with no header and no symbol table. All addresses are resolved by the compiler using the origin declared with `@originoffs`, and the `@Entry` function is placed first so that execution can begin at the first byte. Flat images cannot call external functions; the built-in `calloc`, `free` and `exit` of the runtime are available.
+
+@table widths=24,76 title="Typical origins of flat images" label=tab-origins
+Origin | Use
+`0x7C00` | BIOS boot sector (512 bytes, ending with the signature `55 AA`).
+`0x100` | DOS `.COM` programs.
+`0x0` | Position at the start of a segment, firmware images, code copied by a loader.
+`0x100000` | Kernels loaded at 1 MiB by a boot loader.
+@end
+
+The 16-bit image of [[ex-16-first]] and the 32-bit image below were executed by the emulators of the test suite (`tests/bits16/emu16.py` and `tests/bits32/emu32.py`, built on the Unicorn engine), which load the image, call it, and print the value of `AX` / `EAX` when the entry function returns. The variant `tests/bits32/emu_vga.py`, used below, also prints the first characters of the VGA text buffer at `0xB8000` and the set of attribute bytes found there.
+
+@example bits=32 flat vga run asm asmlimit=30 title="A 32-bit flat image that writes to VGA text memory" label=ex-flat32
+@bits(32)
+@originoffs(0)
+
+@Entry
+pub func _start(): int32 {
+    uint8* vga = 0xB8000;
+    string msg = "ASH!";
+    for (int32 i = 0; i < 4; i++) {
+        vga[i * 2] = msg[i];
+        vga[i * 2 + 1] = 0x1F;          // white on blue
+    }
+    return 42;
+}
+@end
+
+A complete boot sector is easier to write with the stand-alone assembler, which can pad the image to 510 bytes and append the signature; [[shasm-boot]] shows one.
+
+@section{tgt-win} Windows x64
+@index Windows; COFF; Microsoft x64 ABI; shadow space
+`--win` writes a COFF object for AMD64. Calls to external functions use the Microsoft x64 calling convention:
+
+- the first four integer or pointer arguments in `rcx`, `rdx`, `r8`, `r9`;
+- 32 bytes of *shadow space* reserved by the caller just above the return address (`sub rsp, 0x20` before the call, `add rsp, 0x20` after);
+- further arguments on the stack above the shadow space;
+- the result in `rax`.
+
+References to external functions use `IMAGE_REL_AMD64_REL32` relocations, resolved by the linker against import libraries such as `kernel32.lib`, `user32.lib` or `ntdll.lib`.
+
+@example win asm=main show=src,asm title="A call to MessageBoxA with the Microsoft convention" label=ex-win-msgbox
+extern int32 MessageBoxA(uint64 hwnd, uint64 text, uint64 caption, uint32 type);
+extern void ExitProcess(uint32 code);
+
+@Entry
+pub func main(): void {
+    int32 r = MessageBoxA(0, "Hello from ASH", "ASH", 64);   // MB_ICONINFORMATION
+    ExitProcess(r);
+}
+@end
+
+The disassembly shows the shadow space and the four argument registers. The program is linked with Microsoft's linker or with MinGW-w64:
+
+@code sh
+link /subsystem:windows /entry:main msgbox.obj kernel32.lib user32.lib
+x86_64-w64-mingw32-gcc msgbox.obj -o msgbox.exe -nostartfiles -Wl,-e,main -lkernel32 -luser32
+@end
+
+A program linked with `-nostartfiles` has no C runtime: its entry function must end the process with `ExitProcess`. The example in [[ex-win-first]] was linked this way and executed under Wine.
+
+@warning
+Limitations of the Windows target in `ashc` 1.0: floating-point values passed to variadic functions are not copied to the integer registers as the Microsoft convention requires; and functions compiled by ASH use `rdi` and `rsi` (which are callee-saved on Windows) without preserving them, which is harmless when the program ends with `ExitProcess` but must be considered when ASH code is called from C code compiled for Windows.
+@end
+
+@section{tgt-uefi} UEFI Applications
+@index UEFI; EFI
+UEFI firmware uses the Microsoft x64 calling convention and UCS-2 strings. ASH provides the pieces needed to write UEFI applications: `--win` produces COFF objects that UEFI linkers accept, `@efiapi` makes the entry function receive `ImageHandle` and `SystemTable` in `rcx` and `rdx`, `L"..."` produces UCS-2 strings, structures describe the firmware tables, and pointer chains with calls such as `st->ConOut->OutputString(st->ConOut, msg)` use the Microsoft convention for indirect calls under `--win`.
+
+@code ash top
+// Simplified EFI tables: only the fields used here are described.
+typedef struct {
+    uint64 Reset;
+    uint64 OutputString;          // EFI_TEXT_STRING
+} SimpleTextOutput;
+
+typedef struct {
+    uint64 Signature;             // EFI_TABLE_HEADER
+    uint32 Revision;
+    uint32 HeaderSize;
+    uint32 CRC32;
+    uint32 Reserved;
+    uint64 FirmwareVendor;
+    uint32 FirmwareRevision;
+    uint64 ConsoleInHandle;
+    uint64 ConIn;
+    uint64 ConsoleOutHandle;
+    SimpleTextOutput* ConOut;
+} SystemTable;
+@end
+
+@note
+The layout of every EFI table must be taken from the UEFI specification. The resulting `.obj` file is linked into a PE image of subsystem `EFI_APPLICATION`, for example with `lld-link /subsystem:efi_application /entry:efi_main`.
+@end
+
+@section{tgt-ctypes} Corresponding C and ASH Types
+@table widths=40,30,30 title="C types and their ASH equivalents (x86-64 Linux)" label=tab-c-types
+C type | ASH type | Size
+`char`, `signed char` | `int8` | 1
+`unsigned char`, `uint8_t`, `bool` (`_Bool`) | `uint8`, `bool` | 1
+`short`, `int16_t` | `int16` | 2
+`unsigned short`, `uint16_t` | `uint16` | 2
+`int`, `int32_t` | `int32` | 4
+`unsigned int`, `uint32_t` | `uint32` | 4
+`long`, `long long`, `int64_t`, `ssize_t`, `intptr_t` | `int64` | 8
+`unsigned long`, `unsigned long long`, `size_t`, `uint64_t`, `uintptr_t` | `uint64` | 8
+`T*`, `void*` | `T*`, `void*`, `ptr`, `uint64` | 8
+`const char*` | `string` | 8
+`struct S` | `S` (same fields) | same
+function pointer | `ptr`, `uint64`, `int64` | 8
+@end
+
+On 64-bit Windows `long` is 32 bits (`int32` in ASH); on the i386 targets `long` and pointers are 32 bits.
+
+@section{tgt-c-calls} Calling Directions
+@table widths=30,70 title="ASH and C calling each other" label=tab-interop
+Direction | How
+ASH calls C | Declare the function with `extern` (recommended) or call it directly; link the C object or library.
+C calls ASH | Declare the ASH function `pub`; in C, write the prototype with corresponding types ([[tab-c-types]]). Methods are called `Class_method`.
+C reads/writes ASH data | Declare the global `general` (and `static` if C writes it); in C, `extern T name;`.
+ASH reads/writes C data | Take the address of the C variable with an `extern` function that returns it, or receive it as a pointer argument.
+Callbacks | Pass `&f` where C expects a function pointer ([[fn-pointers]]).
+@end

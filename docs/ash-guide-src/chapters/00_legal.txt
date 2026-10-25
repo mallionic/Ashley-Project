@@ -1,0 +1,24 @@
+@spacer 40
+**Notices and Disclaimers**
+
+This document is part of **The Ashley Project**. It describes the ASH programming language, the `ashc` compiler (version 1.0.0), the ASHIR intermediate representation, the `shasm` assembler (version 1.2.0) and the `nlib` system library that ships embedded in the compiler.
+
+The Ashley Project is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3, or (at your option) any later version. The Ashley Project is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Every program listing in this manual that is presented as an *example* was compiled with `ashc` 1.0.0 while this document was being produced. Program output, exit statuses, ASHIR listings and disassembly listings shown next to an example are the real results of that build; they were not typed by hand. Results may differ with other compiler versions, other C libraries, other linkers or other operating systems.
+
+The information in this manual is subject to change without notice. Code generation details (register choices, instruction order, stack layout, helper routine names) are described to help you understand and debug your programs; they are not a stable interface unless a section says so explicitly.
+
+Software and workloads used in examples may have been optimized for the x86-64 Linux environment in which this document was built. Where a feature depends on the target (16-bit flat binaries, 32-bit ELF objects, Windows COFF objects, programs without the C library) the dependency is stated in the text.
+
+x86, x86-64, Intel 64 and IA-32 are names used to identify processor architectures; Linux is a registered trademark of Linus Torvalds; Windows is a trademark of Microsoft Corporation; Java and GraalVM are trademarks of Oracle and/or its affiliates; other names and brands may be claimed as the property of others.
+
+Copyright © 2026 Mallionic Inc. All rights reserved.
+
+@spacer 14
+**Revision History**
+
+@table widths=18,22,60
+Revision | Date | Description
+1.0 | October 2026 | Initial release. Covers ashc 1.0.0, shasm 1.2.0 and the nlib libraries args, delay, math, null, stdbool, stdio, stdlib, string, syscalls and types.
+@end

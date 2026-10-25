@@ -1,0 +1,187 @@
+@chapter{ch-arch} Architecture of the Compiler
+@index compiler pipeline; architecture
+This chapter follows a program through `ashc`, from the bytes of the source file to the bytes of the object file. Knowing the stages helps to read diagnostics (each stage reports different kinds of errors), to understand why some constructs are rewritten into others, and to locate the source code of the compiler when you want to extend it.
+
+@section{arch-overview} Overview
+`ashc` is organized as a classic two-part compiler. The **front end** (package `Builder` and `Builder.ash`) reads ASH and produces ASHIR, a textual intermediate representation. The **back end** (package `arch`) reads ASHIR and produces machine code wrapped in an output format. The two halves communicate only through ASHIR text, which is why the front end can be stopped after ASHIR (the default output mode) and why the back end accepts `.ashir` files directly.
+
+@flow title="The ashc pipeline" label=fig-pipeline
+Source text | The `.ash` file, read as UTF-8. | data
+AsmBlocks.extract | Removes every `asm { }` and `asm("...")` statement and keeps its text aside; leaves `__asm(N);` in its place.
+Directives.process | Evaluates `%if`, `%define`, `%error` ... lines; removed lines become blank so line numbers stay correct.
+Untokenizer | The lexer: characters to tokens (identifiers, numbers, strings, operators).
+Token passes | Macros (`define`), Redefines, Structs.expand, Typedefs and user annotations.
+Parser | Builds the AST: functions, classes, globals, externs, imports, statements, expressions.
+AST passes | Imports merged, helpers added, Visibility, Builtins, ParamCopies, Structs, Cracks, Globals.
+Generator | AST to ASHIR text; adds runtime helpers on demand; tree-shakes unused imported code. | data
+ASHIR parser | `arch.builtin.Tokens` and `Parsing`: ASHIR text back to a list of operations.
+Code generator | `Backend` (x86-64) or `Backend32` (i386 / 8086): operations to machine code; `shasm` assembles `asm` payloads.
+Object writer | `JavaElfOBJ`, `JavaWinOBJ`, `Obj32` or a flat image (`Builder`), plus the `--exe` wrapper. | out
+@end
+
+The source code of the compiler is laid out as follows:
+
+@table widths=28,72 title="Source tree of ashc" label=tab-source-tree
+Directory | Contents
+`arch/Main.java` | The driver: command line parsing, choice of output mode, orchestration of front end and back end, writing of the output file.
+`Builder/Untokenizer.java` | The lexer of ASH.
+`Builder/Parseconv.java` | Parser entry point and the list of AST passes; ASHIR post-processing (tree shaking, `--no-libc` runtime).
+`Builder/ash/` | One class per language feature: `Exprs` (expressions), `Conditional` (control flow), `Funcs` (functions and statements), `Vars`, `Structs`, `Globals`, `Cracks`, `Macros`, `Directives`, `Imports`, `Redefines`, `Annotations`, `AsmBlocks`, `Inject` (emit), `StringConv`, `WideStrings`, `Visibility`, `Generator` (AST to ASHIR) ...
+`arch/builtin/` | ASHIR lexer and parser (`Tokens`, `Parsing`), the x86-64 code generator (`Backend`, `Vars*`, `backd/*`), the `repeat` macro.
+`arch/Backend32.java` | Code generator for 32-bit and 16-bit targets.
+`arch/X86.java`, `arch/ALU.java`, `arch/Jumpz.java`, `arch/FloatingPoint.java`, `arch/Registers/` | Instruction encoders used by the back ends.
+`arch/formatter/` | Object writers: `JavaElfOBJ` (ELF64), `JavaWinOBJ` (COFF AMD64). `arch/Obj32.java` writes ELF32 and COFF i386.
+`arch/AsmBridge.java` | Glue between the code generator and the embedded `shasm` assembler.
+`shasm/` | The assembler: preprocessor, expression evaluator, instruction database, encoders, ELF and COFF writers.
+`nlib/` | Sources of the system libraries, embedded into the compiler by `tools/EmbedNlib.java`.
+@end
+
+@section{arch-front} The Front End
+@subsection{arch-asmblocks} Extraction of assembly blocks
+@index AsmBlocks
+The very first pass works on raw characters. Assembly does not follow the lexical rules of ASH (a `;` starts a comment in assembly, `[rax+8]` is not an index expression), so `AsmBlocks.extract` finds every `asm { ... }`, `volatile asm { ... }` and string-form `asm(...)` statement, stores the assembly text in a table and replaces the statement with a placeholder call `__asm(N);`. Newlines are preserved so that every following line keeps its line number. String and comment contents are skipped while scanning, so the word `asm` inside a string is not mistaken for a statement.
+
+@subsection{arch-directives} Compile-time directives
+@index Directives
+`Directives.process` handles the lines that begin with `%` ([[ch-pp]]). It evaluates `%if` conditions with the predefined target symbols (`ASH_BITS`, `ASH_FORMAT`, `ASH_OS` ...), keeps or removes the guarded lines, records `%define` symbols and replaces their uses, and stops the build on `%error`. Removed lines are replaced by empty lines. Because this happens before the lexer, a directive can remove any text, even text that would not be valid ASH.
+
+@subsection{arch-lexer} The lexer (Untokenizer)
+@index lexer; Untokenizer
+`Untokenizer` turns the text into a list of tokens. Each token has a type (`IDENT`, `NUMBER`, `FLOAT`, `STRING`, `CHAR`, an operator type such as `SHL` or `POW`, punctuation, `EOF`), its text and its line and column. Keywords are not separate token types: they are identifiers that the parser recognizes in context, which is why ASH lets you name a variable `terminate` or `ptr` ([[lex-keywords]]). The `--tokens` option prints this list.
+
+@subsection{arch-tokenpasses} Token-level passes
+Four passes rewrite the token list before parsing:
+
+@table widths=22,78 title="Token-level passes"
+Pass | Effect
+`Macros` | Collects `define NAME value;` and replaces later uses of `NAME` by the value tokens. Macros never reach the parser.
+`Redefines` | Handles `redefine` aliases (`redefine uint64 printf(...) uint64 out(...)`) by renaming calls, and turns `redefine global` definitions into exported functions with a high override right.
+`Structs.expand` | Removes `struct` and `typedef struct` definitions from the stream after recording their fields, sizes and offsets.
+`Typedefs.expand` | Replaces type aliases (`typedef uint32 u32;`) everywhere, and applies user-defined annotations (`@Trace(...) { ... }`) by inserting their bodies at the start of the annotated functions.
+@end
+
+@subsection{arch-parser} The parser
+@index parser; AST
+The parser is a hand-written recursive-descent parser spread over several classes. `Parseconv.parseProgram` loops over top-level items: `"use strict"`, override assignments (`name.override = N;`), global variables, `import`, `extern`, annotations, classes and functions. `Funcs` parses function headers and statements, `Conditional` parses control flow, `Vars` parses declarations and assignments and `Exprs` parses expressions with the precedence described in [[expr-precedence]]. The result is an abstract syntax tree (`Builder/ash/Ast.java`).
+
+Some constructs are *lowered* to simpler ones while parsing. A `switch` becomes a `while` loop with `if` statements and a match flag ([[cf-switch-lowering]]); `~x` becomes `x ^ -1`; unary minus becomes `0 - x`; `va_arg(i)` becomes a call to a selector helper; `Class.method(...)` becomes a call to `Class_method(...)`.
+
+@subsection{arch-astpasses} AST passes
+After parsing, `Parseconv.convert` runs the following passes, in this order:
+
+1. **Imports** — every imported file is parsed in turn and its functions, globals, externs, structs and typedefs are merged into the program. When two definitions share a name, override rights decide which one survives ([[mod-override]]).
+2. **Helpers** — if the program uses variadic functions, a non-constant `**` or a non-constant `***`, the corresponding helper functions (`__va_get`, `__ash_pow`, `__ash_sqpow`) are added.
+3. **Visibility** — rejects calls to `priv` class methods from outside the class and calls to `priv` functions of other files.
+4. **Builtins** — rewrites `len(a)`, `length(a)`, `rows(m)`, `cols(m)` and `count(m)` into length queries, unless you defined functions with those names.
+5. **ParamCopies** — a parameter that is assigned inside its function is renamed `__arg_<name>` and a local copy named like the parameter is declared at the start of the function.
+6. **Structs** — rewrites `p.field`, `p->field` and chains such as `a->b->c` into typed loads and stores at byte offsets.
+7. **Cracks** — moves each crack into its own function `__crack_<function>_<crack>`, rewrites `f.crack = values;` into calls, and implements `unreturnable` with a hidden global `__ret_<function>`.
+8. **Globals** — rewrites every access to a global variable `g` into a typed memory access `*(T*)&g`, checks that constants (globals without `static`) are never assigned, and expands `g++`.
+
+@subsection{arch-generator} ASHIR generation
+@index Generator; runtime helpers
+`Builder/ash/Generator.java` walks the final AST and prints ASHIR. Every expression is broken down into operations on named temporaries (`__tmp1`, `__tmp2`, ...), every control structure into labels and conditional branches. Strings become `.string` data, globals become `.gvar` / `.gdata` entries.
+
+The generator also adds the *runtime helpers* when the program needs them. A program that uses arrays, strings or shifts by a variable amount receives the runtime block (`__ash_alloc` and `__ash_free` for heap blocks, `__ash_bounds` for bounds checking, `__ash_strlen`, `__ash_memcpy`, `__ash_str_new`, `__ash_str_set`, `__ash_matrix`, `__ash_shl`, `__ash_shr`); a program that uses none of these features receives nothing. Variadic functions add `__va_get`, a non-constant `**` adds `__ash_pow` and a non-constant `***` adds `__ash_sqpow`. [[ashir-runtime]] describes each helper.
+
+Finally two text-level passes run on the ASHIR:
+
+- **Tree shaking** — a function that came from an imported file is kept only if a function of the main file reaches it, directly or indirectly. Functions of the main file are always kept, because they may be called from C. This is why `import <string>;` costs nothing when you use only `strlen`.
+- **--no-libc runtime** — when compiling for 64 bits without the C library, the external declarations of `calloc`, `free` and `exit` are replaced by ASHIR functions that use `mmap` and `exit_group` system calls through inline assembly.
+
+@section{arch-back} The Back End
+@subsection ASHIR parsing
+The back end does not share data structures with the front end; it starts again from text. `arch.builtin.Tokens` splits the ASHIR into tokens and `Parsing` builds a list of functions, externs, global data and operations. This design keeps the two halves independent and makes the ASHIR format a real interface, which you can generate or edit yourself.
+
+@subsection{arch-codegen-overview} Code generation
+@index code generation
+The 64-bit code generator (`arch.builtin.Backend` and its helpers in `arch/builtin/backd/`) translates operations one by one into x86-64 instructions:
+
+- Local variables and parameters of integer type are kept in the registers `r8` to `r15` while they fit; temporary values use `rax`, `rcx` and `rdx`.
+- A first pass over each function measures which of the callee-saved registers `r12`–`r15` it uses, so that the prologue saves only those (compact epilogue).
+- Leaf functions that need no stack space are emitted without a frame unless `-e` or `@beautycode(false)` is in effect.
+- Calls follow the System V AMD64 convention (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`, then the stack), or the Microsoft x64 convention for `--win` external calls and `@msabi` functions.
+
+The 32-bit and 16-bit generator (`arch/Backend32.java`) uses a simpler model: every variable has a slot in the stack frame addressed through `ebp` (`bp` in 16-bit code), arguments are pushed on the stack (`cdecl`), and the result is returned in `eax` / `ax`. [[ch-codegen]] describes both generators in detail.
+
+@subsection{arch-shasm} Assembly through shasm
+@index AsmBridge; shasm
+When the code generator reaches an `asm` operation, it decodes the hexadecimal payload back into assembly text, replaces each variable reference (written `@var:name` in the payload) with the operand that holds the variable at that point (`r12`, `qword [rbp-0x18]`, ...), and hands the text to the embedded `shasm` assembler through `arch.AsmBridge`. The assembler runs in flat mode with the current origin and bit width and returns the encoded bytes, which are copied into the instruction stream. Because the same assembler is available as a stand-alone tool, anything that assembles with `shasm` can be pasted into an `asm` block ([[ch-shasm]]).
+
+@subsection{arch-writers} Object writers
+@index ELF; COFF; relocation
+The code generator writes into a byte buffer and records three kinds of facts: symbol definitions (functions, strings, globals), references to symbols that are not yet known or are external, and section placement requests (`@section`). The object writer then lays out sections and turns references into relocations:
+
+@table widths=22,78 title="Object writers"
+Writer | Output
+`JavaElfOBJ` | ELF64 relocatable object for x86-64. Code, string literals and global variables share one section named `.ashtext` (flags *alloc*, *write*, *execute*); functions and data placed with `@section` get their own sections. Empty `.rodata` and `.data` sections are present for compatibility, `.note.GNU-stack` marks the stack as non-executable, and `.comment` records the producer and the path of the source file. Public functions and `general` globals are global symbols; references between functions and to external functions use `R_X86_64_PLT32` and `R_X86_64_PC32` relocations.
+`JavaWinOBJ` | COFF object for AMD64 with `IMAGE_REL_AMD64_REL32` relocations for calls to external functions such as those of `kernel32.dll`.
+`Obj32` | ELF32 or COFF objects for i386.
+`Builder` (flat) | A raw image: code followed by data, addresses resolved against the origin given with `@originoffs`.
+`--exe` wrapper | Prepends an ELF32 header and a single read-write-execute program header to a flat 32-bit image whose entry is the first byte of the code. One extra mebibyte of zero-filled memory is reserved after the image for the built-in heap.
+@end
+
+@section{arch-observe} Observing the Stages
+Each stage can be observed from the command line:
+
+@table widths=30,70 title="How to look at each stage"
+Stage | How to observe it
+Directives | Put `%warning text` or `%tip text` lines in the source; they are printed when reached.
+Lexer | `ashc file.ash --tokens`
+AST passes and Generator | `ashc file.ash` (writes `file.ashir`) or `ashc file.ash --stdout`
+Code generator | `objdump -d -M intel out/file.o`, or `objdump -D -b binary -m i386 out/file.bin` for flat images
+Object writer | `readelf -a out/file.o`, `objdump -h -r -t out/file.o`
+Timing of every stage | `ashc file.ash --elf --debug`
+@end
+
+The following example takes one small function through the main stages. First the source:
+
+@code ash file=stages.ash
+func scale(int64 v): int64 {
+    return v * 3 + 1;
+}
+
+@Entry
+pub func main(): int64 {
+    return scale(4);           // 13
+}
+@end
+
+The tokens of the first line, as seen by the parser:
+
+@session maxlines=16
+$ ashc stages.ash --tokens -s | head -14
+@end
+
+The ASHIR produced by the front end:
+
+@session
+$ ashc stages.ash --stdout -s
+@end
+
+The machine code produced by the back end:
+
+@session
+$ ashc stages.ash --elf -s && objdump -d -M intel out/stages.o | tail -n +7
+@end
+
+The relocations and the symbols written by the object writer:
+
+@session
+$ ashc stages.ash --elf -s && objdump -r out/stages.o | tail -n +4
+$ nm out/stages.o
+@end
+
+@section{arch-design} Design Notes
+@subsection Why a textual intermediate representation
+Using text between the halves of the compiler has a small cost (the back end parses ASHIR again) and large benefits: every program can be inspected at the boundary, the back end can be tested with hand-written ASHIR, other front ends (for example a generator written in Python) can target ASHIR, and a bug can be located on one side of the boundary simply by reading the ASHIR.
+
+@subsection Why many small passes
+Each language feature is implemented as an isolated class and, where possible, as a rewrite into features that already exist. `switch` is a loop with `if` statements, `repeat (n)` is a `for` loop with a hidden counter, a crack is an ordinary function, a global access is a pointer dereference. New features can therefore be added without touching the back end, and the back end stays small enough to be verified by reading its output.
+
+@subsection Determinism
+For a given source file, compiler version and build host, `ashc` always produces the same bytes: temporary names and labels are numbered in program order and no time stamps are written. Compiling the same file twice on the same machine yields identical objects, which makes byte-exact comparisons (like the ones used throughout this manual) possible.
+
+@note
+ELF objects written by `ashc` 1.0 also contain a few local *file* symbols that describe the build host (operating system name, kernel version, architecture, user name and home directory), and the `.comment` section records the absolute path of the source file. They do not affect linking, but they make objects built by different users differ, and they reveal information about the build machine. Remove them before distributing an object with `objcopy --strip-unneeded --remove-section=.comment file.o` (the global symbols needed for linking are kept).
+@end

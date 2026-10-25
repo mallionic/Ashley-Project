@@ -1,0 +1,339 @@
+@chapter{ch-funcs} Functions
+@index functions
+Functions are the units of code in ASH. This chapter describes how functions are declared, how parameters and return values work, the calling conventions used on each target, recursion, variadic functions, function pointers and callbacks, external C functions and the program entry point.
+
+@section{fn-decl} Declaring a Function
+@code text nocheck
+[pub | priv] func name ( [parameters] ) [ : return-type ] { body }
+[pub | priv] func return-type name ( [parameters] ) { body }
+@end
+
+The return type may be written after the parameter list, preceded by a colon (the preferred ASH style), or before the name, as in C. When no return type is written, the function returns `void`.
+
+@table widths=24,76 title="Parts of a function declaration" label=tab-func-parts
+Part | Meaning
+`pub` | The function is a global symbol of the object file: C code and other objects can call it. Use `pub` for the entry point and for every function exported to C.
+`priv` | The function cannot be called from other ASH files that import this one ([[mod-visibility]]).
+(neither) | The function is visible to the ASH files of the program but is a local symbol of the object file.
+*parameters* | A comma-separated list of `type name`. A parameter written `type name[]` is a pointer to the first element of an array. The list may end with `...` ([[fn-variadic]]).
+*return-type* | Any scalar type, pointer type or `void`.
+@end
+
+@example run title="Function declaration styles" label=ex-func-styles
+func int64 twice(int64 x) {          // C style: return type first
+    return x * 2;
+}
+
+func hello() {                       // no return type: void
+    printf("hello\n");
+}
+
+func fib(int64 n): int64 {           // ASH style
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+@Entry
+pub func main(): int64 {
+    hello();
+    printf("%d %d\n", twice(21), fib(20));
+    return 0;
+}
+@end
+
+A function can be called before it is defined in the file; the order of definitions does not matter.
+
+@section{fn-params} Parameters
+@index parameters
+Parameters behave like local variables initialized by the caller. Scalar parameters are passed **by value**: the function receives a copy. Arrays, strings and structures are passed as addresses, so the function can modify the caller's data through them.
+
+@subsection{fn-paramcopies} Assigning to a parameter
+The code generator treats incoming parameters as read-only values. When a function assigns to a parameter (`n = n - 1;`, `n++`), the front end renames the parameter to `__arg_n` and declares, at the start of the function, a local variable `n` initialized from it. The function then works on the copy, exactly as C semantics require.
+
+@example run ir=countdown show=src,out,ir title="A modified parameter becomes a local copy" label=ex-paramcopy
+func countdown(int64 n): int64 {
+    int64 steps = 0;
+    while (n > 0) {
+        n = n - 3;
+        steps++;
+    }
+    return steps;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 start = 10;
+    printf("%d steps, start is still %d\n", countdown(start), start);
+    return 0;
+}
+@end
+
+@subsection{fn-byref} Passing by reference
+To let a function modify a variable of the caller, pass its address and dereference it:
+
+@example run title="Modifying the caller's variables through pointers" label=ex-byref
+func swap(int64* a, int64* b): void {
+    int64 t = a[0];          // same as *a
+    a[0] = b[0];
+    b[0] = t;
+}
+
+func add_to(int64* target, int64 amount): void {
+    *target = amount;        // a store through a pointer parameter
+}
+
+@Entry
+pub func main(): int64 {
+    int64 x = 1;
+    int64 y = 2;
+    swap(&x, &y);
+    int64 z = 0;
+    add_to(&z, 7);
+    printf("x=%d y=%d z=%d\n", x, y, z);
+    return 0;
+}
+@end
+
+@warning
+In `ashc` 1.0, a function that both *reads* `*p` and then *writes* `*p` through the same pointer **parameter** fails to compile with the message "Variable does not exist: p". Use indexing (`p[0]`), as in the example above, or copy the parameter into a local pointer first (`int64* q = p;`) and work through `q`.
+@end
+
+@section{fn-return} Return Values
+A function with a non-`void` return type gives its result with `return value;` or `terminate value;`. The value is converted to the return type: a function declared `: uint8` returns only the low 8 bits. Integer and pointer results are returned in `rax` (`eax` on 32-bit targets, `ax` on 16-bit targets). Narrower results occupy the low part of the register and are extended by the caller according to the declared type.
+
+@section{fn-conv} Calling Conventions
+@index calling convention; System V; ABI
+ASH functions use the standard calling convention of the target, which makes them directly callable from C and lets ASH call C without glue code.
+
+@table widths=24,76 title="Calling conventions by target" label=tab-callconv
+Target | Convention
+x86-64 (Linux, `--elf`) | System V AMD64: the first six integer or pointer arguments in `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`; further arguments on the stack, pushed from right to left, each in an 8-byte slot; result in `rax`. `rbx`, `rbp`, `r12`–`r15` are preserved across calls. Before a call to a variadic C function, `al` holds the number of vector registers used (always 0 for ASH).
+x86-64, `--win` external calls and `@msabi` | Microsoft x64: the first four arguments in `rcx`, `rdx`, `r8`, `r9`; further arguments on the stack above 32 bytes of *shadow space* reserved by the caller; result in `rax`.
+i386 (`@bits(32)`) | `cdecl`: all arguments pushed on the stack from right to left, the caller removes them; result in `eax`.
+8086 (`@bits(16)`) | Arguments pushed on the stack as 16-bit words; result in `ax`.
+@end
+
+@subsection{fn-stackargs} More than six arguments
+On x86-64, the seventh and following arguments travel on the stack. The caller pushes them before the call and removes them afterwards; the callee reads them at `[rbp+16]`, `[rbp+24]` and so on.
+
+@example run asm=many,main asmlines=60 title="Arguments beyond the sixth are passed on the stack" label=ex-stackargs
+func many(int64 a, int64 b, int64 c, int64 d, int64 e, int64 f, int64 g, int64 h): int64 {
+    return g * 10 + h;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d\n", many(1, 2, 3, 4, 5, 6, 7, 8));
+    return 0;
+}
+@end
+
+In the disassembly, `main` pushes 8 and 7 (the last arguments first), loads the first six into registers, calls `many`, and then adds 16 to `rsp` to discard the pushed values. `many` reads `g` from `[rbp+0x10]` and `h` from `[rbp+0x18]`.
+
+@subsection{fn-frames} Stack frames
+@index prologue; epilogue; leaf function
+A function that needs stack space, saves callee-saved registers or makes calls gets a frame:
+
+@code asm nocheck
+push rbp                 ; prologue
+mov  rbp, rsp
+sub  rsp, N              ; locals, saved registers, temporaries
+mov  [rbp-8], r12        ; save only the r12-r15 actually used
+...
+mov  r12, [rbp-8]        ; restore them
+leave                    ; epilogue: mov rsp, rbp / pop rbp
+ret
+@end
+
+A leaf function that keeps everything in the caller-saved registers needs no frame at all and is emitted as straight-line code ending in `ret` (see [[ann-beautycode]]). The entry point `_start` additionally aligns the stack to 16 bytes (`and rsp, -16`), because the process entry is not reached through a `call`.
+
+@section{fn-recursion} Recursion
+Functions may call themselves directly or indirectly. Each activation has its own parameters and locals (in registers saved by the callee, or in its frame), so recursion works as in C. The depth is limited only by the size of the stack (8 MiB by default on Linux).
+
+@example run title="Recursion: greatest common divisor and Ackermann" label=ex-recursion
+func gcd(int64 a, int64 b): int64 {
+    if (b == 0) { return a; }
+    return gcd(b, a % b);
+}
+
+func ack(int64 m, int64 n): int64 {
+    if (m == 0) { return n + 1; }
+    if (n == 0) { return ack(m - 1, 1); }
+    return ack(m - 1, ack(m, n - 1));
+}
+
+@Entry
+pub func main(): int64 {
+    printf("gcd(1071, 462)=%d ack(2, 3)=%d\n", gcd(1071, 462), ack(2, 3));
+    return 0;
+}
+@end
+
+@section{fn-variadic} Variadic Functions
+@index variadic; va_arg; va_count
+A function whose parameter list ends with `...` accepts up to **8** extra arguments after its fixed parameters. Inside the function:
+
+- `va_count()` is the number of extra arguments actually passed;
+- `va_arg(i)` is the extra argument number *i* (0-based), as a 64-bit integer or address.
+
+@example run title="A variadic sum" label=ex-variadic
+func sum(int64 base, ...): int64 {
+    int64 total = base;
+    for (int64 i = 0; i < va_count(); i++) {
+        total = total + va_arg(i);
+    }
+    return total;
+}
+
+func join(string first, ...): void {
+    printf("%s", first);
+    for (int64 i = 0; i < va_count(); i++) {
+        printf(" %s", va_arg(i));      // extra strings arrive as addresses
+    }
+    printf("\n");
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d %d %d\n", sum(100), sum(100, 1, 2, 3), sum(0, 1, 2, 3, 4, 5, 6, 7, 8));
+    join("ASH", "is", "a", "language");
+    return 0;
+}
+@end
+
+@subsection{fn-variadic-impl} How variadic functions are implemented
+A variadic ASH function is an ordinary function with nine hidden parameters: `__vac` (the count) and `__va0` to `__va7`. At every call site the compiler passes the fixed arguments, the number of extra arguments, the extra arguments, and zeros for the unused slots. `va_count()` is simply `__vac`, and `va_arg(i)` calls the helper `__va_get(i, __va0, ..., __va7)`, which returns the selected argument. A call with more than eight extra arguments is a compile-time error.
+
+@example ir show=src,ir title="The hidden parameters of a variadic function" label=ex-variadic-ir
+func count_args(int64 first, ...): int64 {
+    return va_count();
+}
+
+@Entry
+pub func main(): int64 {
+    return count_args(0, 10, 20, 30);
+}
+@end
+
+@important
+Variadic ASH functions are not compatible with C variadic functions: C cannot call an ASH variadic function with the C `...` convention, and an ASH variadic function cannot be declared as a C function pointer type. Calls from ASH to C variadic functions such as `printf` use the C convention and are not limited to eight arguments.
+@end
+
+@section{fn-pointers} Function Pointers and Callbacks
+@index function pointer; callback; faddr
+The expression `&f` (or simply `f` where a value is expected) yields the address of the function `f`. In ASHIR this is the operation `faddr[f]`, which becomes a RIP-relative `lea` in machine code. A function address can be:
+
+- passed to C functions that expect a callback (`qsort`, `atexit`, `pthread_create`, `signal`, GUI toolkits ...);
+- stored in an integer or pointer variable and called through it: `fp(2, 3)`;
+- stored in a structure field and called through a member chain: `ops->handler(2, 3)`.
+
+@example run title="Callbacks passed to the C library" label=ex-callbacks
+extern int64 atexit(int64 fn);
+extern void qsort(int64 base, int64 n, int64 size, int64 cmp);
+
+func goodbye(): void {
+    printf("goodbye (called by atexit)\n");
+}
+
+func compare(int64 a, int64 b): int64 {
+    int64 x = *(int64*)a;
+    int64 y = *(int64*)b;
+    if (x < y) { return -1; }
+    elif (x > y) { return 1; }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    atexit(&goodbye);
+    int64 v[5];
+    v[0] = 5; v[1] = 2; v[2] = 9; v[3] = 1; v[4] = 7;
+    qsort(&v, 5, 8, compare);
+    printf("%d %d %d %d %d\n", v[0], v[1], v[2], v[3], v[4]);
+    return 0;
+}
+@end
+
+@example run ir=main show=src,out,ir title="Calling through a variable and through a structure field" label=ex-indirect
+typedef struct {
+    uint64 handler;
+} Ops;
+
+func add(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 fp = &add;
+    int64 r1 = fp(2, 3);             // call through a variable
+    Ops o;
+    Ops* ops = &o;
+    ops->handler = &add;
+    int64 r2 = ops->handler(4, 5);   // call through a structure field
+    printf("%d %d\n", r1, r2);
+    return 0;
+}
+@end
+
+An indirect call is compiled to a small assembly sequence that loads the arguments into the argument registers, loads the target address into `rax` and executes `call rax`. With `--win`, `@msabi` or `@efiapi` the Microsoft convention is used for indirect calls, which is what UEFI protocol functions such as `ConOut->OutputString` expect.
+
+@section{fn-extern} External Functions
+@index extern
+`extern` declares a function implemented outside the ASH program: in the C library, in another object file, in a DLL. The declaration gives the parameter types (names are optional) and the return type:
+
+@code text nocheck
+extern return-type name ( [type [name], ...] [, ...] ) ;
+extern func name ( ... ) ;                 // returns void
+@end
+
+@example run title="Declaring external C functions" label=ex-extern
+extern int64 labs(int64 v);
+extern func srand(uint32 seed);
+extern int64 strlen(string);
+extern int64 snprintf(string buf, uint64 n, string fmt, ...);
+
+@Entry
+pub func main(): int64 {
+    srand(1);
+    uint8[32] buf;
+    snprintf(&buf, 32, "%d-%d", 12, 34);
+    printf("%d %d %s\n", labs(-5), strlen("abcd"), &buf);
+    return 0;
+}
+@end
+
+@subsection{fn-implicit-extern} Implicit external functions
+A call to a name that is neither an ASH function nor declared `extern` is compiled as a call to an external symbol with that name, with all arguments passed as integers. This is how `printf`, `puts` or `malloc` can be used without declarations. Declaring the function with `extern` is still recommended: the compiler then checks the number of arguments, uses the declared widths, and the VS Code linter can verify your calls.
+
+@note
+Without the C library (`--no-libc`), an undeclared external function must be supplied by another object file at link time; otherwise the linker reports an undefined reference.
+@end
+
+@section{fn-entry} The Entry Point
+@index @Entry; entry point; argc; argv
+Exactly one function of a program carries the annotation `@Entry`. It is the function that starts the program. It must be `pub` so that its symbol is visible to the linker, and it is never replaced by override rules ([[mod-override]]).
+
+The entry point may receive the command line arguments. With the C runtime (an entry named `main`, or `_start` renamed to `main`), declare two parameters: the argument count and the address of the argument vector. The library `<args>` provides helpers to read the vector ([[nlib-args]]).
+
+@example run args="alpha 42 -v" title="Command line arguments" label=ex-argv
+import <args>;
+
+@Entry
+pub func main(int64 argc, int64 argv): int64 {
+    printf("argc = %d\n", argc);
+    for (int64 i = 1; i < argc; i++) {
+        printf("  [%d] %s\n", i, arg_at(argv, i));
+    }
+    printf("has -v: %d, second as number: %d\n", arg_has(argc, argv, "-v"), arg_int(argv, 2));
+    return 0;
+}
+@end
+
+The example above was run as `./program alpha 42 -v`. Element 0 of the vector is the program path, which is why the loop starts at 1.
+
+@section{fn-naked} Naked Functions
+A function annotated `@naked` contains only `asm` blocks and `emit` statements; the compiler emits no prologue, no epilogue and no `ret`. Arguments are taken directly from the registers of the calling convention. Naked functions are used for interrupt handlers, entry stubs and code whose every byte must be controlled. See [[asm-naked]].
+
+@section{fn-classes} Methods
+Functions declared inside a `class` are methods; they are called as `Class.method(...)`. Methods are ordinary functions named `Class_method` in the object file. See [[ch-classes]].

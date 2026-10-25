@@ -1,0 +1,314 @@
+@chapter{ch-cf} Statements and Control Flow
+@index control flow; statements
+This chapter describes the statements that direct the flow of execution: blocks, conditions, `if` / `elif` / `else`, the four loops (`while`, `for`, `repeat`, `loop`), `switch`, `break`, `continue`, `return` and `terminate`. For each statement it shows the ASHIR lowering, because every structured statement is translated into labels and conditional branches.
+
+@section{cf-stmts} Kinds of Statements
+@table widths=30,70 title="Statements of ASH" label=tab-statements
+Statement | Described in
+Declaration `T x = e;` | [[ch-vars]]
+Assignment, compound assignment, `x++` | [[var-assign]]
+Expression statement (a call) `f(x);` | [[expr-call]]
+`if` / `elif` / `else` | [[cf-if]]
+`while`, `for`, `repeat`, `loop` | [[cf-loops]]
+`switch` / `case` / `default` | [[cf-switch]]
+`break`, `continue` | [[cf-break]]
+`return`, `terminate`, `unreturnable` | [[cf-return]], [[ch-cracks]]
+`asm { }`, `asm("...")`, `emit(...)` | [[ch-asm]]
+`matrix` declaration | [[arr-matrix]]
+@end
+
+Only calls can be used as expression statements: `f(x);` is valid, `a + b;` is not.
+
+@section{cf-blocks} Blocks
+A block is a sequence of statements enclosed in braces. The bodies of `if`, `elif`, `else`, loops and `switch` cases are blocks; **the braces are required**, even for a single statement. Empty statements (a lone `;`) are allowed and ignored.
+
+@section{cf-conditions} Conditions
+@index condition; &&; ||; !
+The headers of `if`, `elif`, `while` and `for` contain a *condition*. A condition is built from:
+
+- comparisons: `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`, `a >= b`, where `a` and `b` are value expressions;
+- a value expression alone, which is true when it is not zero: `if (flags & 4)`, `if (count)`, `if (is_ready())`;
+- `!(` *condition* `)`, the negation of a parenthesized condition;
+- *c1* `&&` *c2*, true when both are true; *c2* is evaluated only if *c1* is true;
+- *c1* `||` *c2*, true when at least one is true; *c2* is evaluated only if *c1* is false;
+- parentheses for grouping.
+
+`&&` binds more tightly than `||`. Evaluation is *short-circuit*, as in C: the right operand is not evaluated when the left one already decides the result, so `if (p != 0 && p[0] == 'x')` is safe.
+
+@subsection{cf-cond-lowering} How conditions are compiled
+A condition never produces a value. It is compiled directly into conditional branches: `brf[a, op, b, L]` jumps to label `L` when the comparison `a op b` is **false**, and `brt[a, op, b, L]` jumps when it is **true**. The comparison codes are `eq`, `ne`, `lt`, `le`, `gt` and `ge`. In machine code each branch becomes a `cmp` followed by a conditional jump chosen from the comparison and the signedness of the operands.
+
+@example run ir=check show=src,ir,out title="Short-circuit lowering of a compound condition" label=ex-cond-lowering
+func check(int64 a, int64 b): int64 {
+    if ((a > 0 && b > 0) || !(a == b)) {
+        return 1;
+    }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d %d %d\n", check(1, 2), check(-1, -1), check(-1, 5));
+    return 0;
+}
+@end
+
+Read the ASHIR from top to bottom: if `a > 0` is false, the code jumps to `__L3`, which tests the right side of `||`; if `b > 0` is true, the whole condition is true and the code jumps to `__L2`, the body. The negation `!(a == b)` costs nothing: it simply turns into "branch to the false label if `a == b`".
+
+@warning
+`if (x = 3)` is not a comparison: assignment is not an expression in ASH, and the compiler rejects it. Write `==`.
+@end
+
+@section{cf-if} The if Statement
+@index if; elif; else
+@code text nocheck
+if ( condition ) { ... }
+[ elif ( condition ) { ... } ]...
+[ else if ( condition ) { ... } ]...
+[ else { ... } ]
+@end
+
+`elif` and `else if` are synonyms; any number of them may follow an `if`, followed by an optional `else`. The first branch whose condition is true is executed; if none is, the `else` block (if any) is executed.
+
+@example run title="if, elif and else" label=ex-if
+func classify(int64 x): int64 {
+    if (x < 10) {
+        return 1;
+    } elif (x < 20) {
+        return 2;
+    } else if (x < 30) {
+        return 3;
+    } else {
+        return 4;
+    }
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d %d %d %d\n", classify(5), classify(15), classify(25), classify(99));
+    return 0;
+}
+@end
+
+@section{cf-loops} Loops
+@subsection{cf-while} while
+@index while
+`while ( condition ) { ... }` evaluates the condition before each iteration and executes the body while it is true. The lowering is: a label at the top, a `brf` to the exit label, the body, a jump back to the top.
+
+@example run ir=main show=src,out,ir title="A while loop" label=ex-while
+@Entry
+pub func main(): int64 {
+    int64 n = 27;
+    int64 steps = 0;
+    while (n != 1) {               // the Collatz sequence of 27
+        if ((n & 1) == 0) {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps++;
+    }
+    printf("steps=%d\n", steps);
+    return 0;
+}
+@end
+
+@note
+ASH has no `do ... while` loop. Write `loop { ...; if (!(condition)) { break; } }` instead.
+@end
+
+@subsection{cf-for} for
+@index for
+@code text nocheck
+for ( [init] ; [condition] ; [update] ) { ... }
+@end
+
+*init* is a declaration, an assignment or an expression; *condition* is a condition; *update* is an assignment, an increment or a call. Any of the three parts may be omitted: an omitted condition is always true, so `for (;;)` loops until a `break`. A variable declared in *init* remains visible after the loop ([[var-scope]]). `continue` inside a `for` jumps to the *update* part.
+
+@example run title="Forms of the for loop" label=ex-for
+@Entry
+pub func main(): int64 {
+    int64 sum = 0;
+    for (int64 i = 1; i <= 10; i++) {
+        sum = sum + i;
+    }
+    int64 j = 0;
+    for (; j < 3;) {
+        j++;
+    }
+    int64 n = 0;
+    for (;;) {
+        n++;
+        if (n == 4) { break; }
+    }
+    for (int64 k = 10; k > 0; k = k - 3) {
+        n = n + 1;                 // k = 10, 7, 4, 1
+    }
+    printf("sum=%d j=%d n=%d\n", sum, j, n);
+    return 0;
+}
+@end
+
+@subsection{cf-repeat} repeat
+@index repeat
+`repeat ( count ) { ... }` executes the body *count* times. *count* is any value expression; it is evaluated once, before the first iteration. The loop counter is hidden (`__rp`*N*), so the body cannot change the number of iterations. `break` and `continue` work as in other loops.
+
+@example run ir=main show=src,out,ir title="repeat and nested repeat" label=ex-repeat
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    repeat (5) {
+        total += 2;
+    }
+    repeat (3) {
+        repeat (2) {
+            total += 1;
+        }
+    }
+    printf("total=%d\n", total);
+    return 0;
+}
+@end
+
+@subsection{cf-loop} loop
+@index loop
+`loop { ... }` repeats its body forever. It is left with `break`, `return` or `terminate`. It is equivalent to `while (1 == 1) { ... }`, which is exactly how it is lowered.
+
+@example run title="loop with break and continue" label=ex-loop
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    int64 n = 0;
+    loop {
+        n++;
+        if (n == 3) { continue; }      // skip 3
+        if (n > 6) { break; }
+        total += 10;                   // n = 1, 2, 4, 5, 6
+    }
+    printf("total=%d n=%d\n", total, n);
+    return 0;
+}
+@end
+
+@section{cf-break} break and continue
+@index break; continue
+`break` leaves the innermost enclosing loop or `switch`. `continue` skips the rest of the body of the innermost enclosing loop and starts the next iteration (in a `for`, the update part runs first). Both are errors outside a loop.
+
+@warning
+In `ashc` 1.0 a `continue` written inside a `switch` that is itself inside a loop does not reach the loop: because `switch` is lowered to an internal loop ([[cf-switch-lowering]]), `continue` restarts the `switch` and the program loops forever. Inside a `switch`, set a flag and test it after the `switch`, or restructure the code with `if` / `elif`.
+@end
+
+@section{cf-switch} The switch Statement
+@index switch; case; default
+@code text nocheck
+switch ( expression ) {
+    case value [: case value]... : statements
+    ...
+    [ default : statements ]
+}
+@end
+
+The *expression* is evaluated once. Execution starts at the first `case` whose value is equal to it, or at `default` if no case matches. As in C, execution **falls through** into the next case unless a `break` (or `return`, or `terminate`) ends it. Case values are value expressions, usually constants: integer literals, character literals, `define` constants or constant expressions such as `1 + 7`. Several `case` labels may share the same statements.
+
+@example run title="switch with fall-through" label=ex-switch
+func name_of(int64 n): int64 {
+    switch (n) {
+        case 1:
+            return 10;
+        case 2:
+        case 3:
+            return 20;        // shared by 2 and 3
+        default:
+            return 99;
+    }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 total = 0;
+    for (int64 i = 0; i < 5; i++) {
+        switch (i) {
+            case 0:
+                total += 1;   // falls through into case 1
+            case 1:
+                total += 10;
+                break;
+            case 4:
+                total += 1000;
+                break;
+            default:
+                total += 100;
+        }
+    }
+    char c = 'b';
+    switch (c) {
+        case 'a': printf("a\n"); break;
+        case 'b': printf("b\n");
+        case 'c': printf("c (fell through)\n"); break;
+    }
+    printf("total=%d name_of(3)=%d\n", total, name_of(3));
+    return 0;
+}
+@end
+
+@subsection{cf-switch-lowering} How switch is compiled
+The parser lowers `switch` to statements that already exist. The subject is copied to a hidden variable `__sw`*N*, and a hidden *match flag* `__swm`*N* records that a case has matched, which is what makes fall-through work. The whole construct is wrapped in a loop that runs once, so that `break` leaves it:
+
+@code text nocheck
+int64 __swN = subject;  int64 __swmN = 0;
+while (1 == 1) {
+    if (__swmN != 0 || __swN == A || __swN == B) { __swmN = 1; ...statements of A, B... }
+    if (__swmN != 0 || __swN == C)               { __swmN = 1; ...statements of C... }
+    if (__swmN != 0 || !(__swN == A || __swN == B || __swN == C)) { __swmN = 1; ...default... }
+    break;
+}
+@end
+
+The cost of a `switch` is therefore one comparison per case label, in order: there is no jump table. Put the most frequent cases first when it matters.
+
+@section{cf-return} Leaving a Function
+@subsection return
+@index return
+`return expression;` ends the function and gives its value to the caller. `return;` ends a `void` function. In a non-`void` function without strict mode, `return;` returns the pending value set by `unreturnable` or 0 ([[ch-cracks]]); strict mode requires a value ([[ch-strict]]). Reaching the closing brace of a `void` function, or of a function that uses `unreturnable`, behaves like `return;`.
+
+@warning
+In `ashc` 1.0, a function with a result type that does not use `unreturnable` and reaches its closing brace without a `return` statement crashes when it is called: no return instruction is generated. Always end such functions with `return value;`. The VS Code linter reports a missing `return` while you type.
+@end
+
+@subsection{cf-terminate} terminate
+@index terminate
+`terminate expression;` ends the function immediately and returns the value, from any depth of nested loops, `switch` statements and blocks. `terminate;` without a value returns the pending `unreturnable` value of the function, or 0 when there is none; in a `void` function it simply leaves. `terminate` behaves like `return`; its name documents the intent "stop everything now", which is particularly useful in deeply nested searches.
+
+@example run title="terminate leaves nested loops at once" label=ex-terminate
+func find(int64 target): int64 {
+    for (int64 i = 0; i < 10; i++) {
+        for (int64 j = 0; j < 10; j++) {
+            if (i * 10 + j == target) {
+                terminate i * 100 + j;     // leaves both loops and the function
+            }
+        }
+    }
+    return -1;
+}
+
+func first_big(int64 limit): int64 {
+    repeat (5) {
+        loop {
+            terminate limit * 2;
+        }
+    }
+    return 0;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("find(37)=%d first_big(21)=%d\n", find(37), first_big(21));
+    return 0;
+}
+@end
+
+Like other keywords, `terminate` is contextual: `terminate = 5;`, `terminate++` or `terminate(...)` refer to a variable or function named `terminate`, not to the statement.
+
+@section{cf-goto} What ASH Does Not Have
+For readers coming from C, the following statements do not exist in ASH 1.0: `goto` and labels (use `terminate`, `break` or flags), `do ... while` (use `loop` with `break`), the conditional operator `?:` (use `if` / `else`), and the comma operator. Inside `asm` blocks, labels and jumps are of course available ([[asm-labels]]).

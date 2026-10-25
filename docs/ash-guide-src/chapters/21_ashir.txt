@@ -1,0 +1,244 @@
+@chapter{ch-ashir} ASHIR: The Intermediate Representation
+@index ASHIR; intermediate representation
+ASHIR (*ASH Intermediate Representation*) is the textual language that connects the front end and the back end of `ashc`. It is produced by `ashc file.ash` (and `--stdout`), and it is accepted as input by `ashc file.ashir`. This chapter specifies its syntax, every operation and directive, and the runtime helper functions that the front end adds to programs.
+
+@section{ashir-overview} Overview
+An ASHIR file is a sequence of top-level items separated by blank lines:
+
+- `extern` declarations of functions defined elsewhere;
+- function definitions, optionally preceded by attributes such as `[entry]`;
+- global data directives: `.string`, `.gvar`, `.gdata`, `.section`.
+
+Inside a function, each line is a declaration (`.type`), an operation in *destination form* (`%dest op[args]`), an operation in *statement form* (`store[...]`, `call[...]`, `inc x`, `ret ...`), or raw bytes (`.raw8`). Every operation is a small, explicit step; there are no nested expressions. The design is close to *three-address code*: an operation reads at most two values and writes one.
+
+@example run ashir title="A complete hand-written ASHIR program" label=ex-ashir-hand
+extern qword printf(qword fmt, qword v)
+
+[entry]
+func qword main() {
+.type i qword
+.type acc qword
+.type neg qword
+    %i mov[0]
+    %acc mov[0]
+    %_ label[top]
+    %_ brf[i, lt, 10, done]
+    %acc add[i]
+    inc i
+    %_ jmp[top]
+    %_ label[done]
+    %neg mov[-64]
+    %neg sar[3]
+    %__t addr[fmt]
+    call[printf, __t, acc]
+    %__t addr[fmt]
+    call[printf, __t, neg]
+    ret qword 0
+}
+
+.string fmt "%ld\n"
+@end
+
+@section{ashir-lex} Lexical Rules
+- Identifiers follow the rules of ASH; names beginning with `__` are used by the compiler.
+- Numbers are decimal (optionally negative) or hexadecimal with `0x`. Binary literals are not accepted (see [[lex-int]]).
+- Strings use double quotes and the escape sequences of ASH.
+- ASHIR has **no comments**: a line beginning with `//` or `;` is a syntax error.
+- Indentation is free; the compiler indents operations by four spaces.
+
+@section{ashir-types} Types
+@table widths=26,74 title="ASHIR types" label=tab-ashir-types
+Type | Meaning
+`byte`, `word`, `dword`, `qword` | Integers of 8, 16, 32 and 64 bits; zero-extended when widened, unsigned comparisons when the source type was unsigned.
+`int8`, `int16`, `int32`, `int64` | Signed integers; sign-extended when widened (`movsx`, `movsxd`).
+`uint8`, `uint16`, `uint32`, `uint64` | Unsigned integers; division, right shift and comparisons use the unsigned instructions.
+`ptr`, `string`, `cstring` | Addresses (64 bits on x86-64).
+`float32`, `float64` | IEEE-754 values (limited support, [[type-float]]).
+`void` | No value (return type only).
+@end
+
+@section{ashir-functions} Functions and Externs
+@code text nocheck
+extern type name(type param, ...)
+[entry] [naked] [efiapi]
+func type name(type param, ...) {
+    body
+}
+@end
+
+`[entry]` marks the entry point, `[naked]` suppresses prologue, epilogue and `ret`, and `[efiapi]` selects the Microsoft x64 convention for the parameters. The alternative header `func name(params): type` is also accepted. Parameters are local variables of the function, initialized from the argument registers or stack slots.
+
+A function body declares its variables with `.type name type` before (or at) their first use. Variables that are not declared get their type from the first value assigned to them.
+
+@section{ashir-ops} Operations
+@subsection Destination form
+@code text nocheck
+%dest op[arg, arg, ...]
+@end
+
+The operation reads its arguments (and, for arithmetic, the current value of `dest`) and writes `dest`. An argument is a variable name, an integer constant, a label or a symbol. `%_` is used as destination when the result is not needed (labels, jumps, branches, assembly).
+
+@table widths=20,32,48 title="Data operations" label=tab-ashir-data
+Operation | Form | Effect
+`mov` | `%d mov[x]` | `d = x`. *x* is a variable or constant; widening follows the types.
+`add` | `%d add[x]` | `d = d + x`
+`sub` | `%d sub[x]` | `d = d - x`
+`imul` / `mul` | `%d imul[x]` | `d = d * x` (low bits; both spellings are accepted)
+`div` | `%d div[x]` | `d = d / x` (signed or unsigned according to the type of `d`)
+`mod` | `%d mod[x]` | `d = d % x`
+`and` `or` `xor` | `%d and[x]` | Bitwise operations
+`shl` | `%d shl[n]` | Left shift by a constant
+`shr` / `sar` | `%d shr[n]` | Right shift by a constant: logical for unsigned `d`, arithmetic for signed `d` (`sar` always arithmetic)
+`load` | `%d load[a]` | `d` = the value at address `a`, with the width of `d`
+`addr` | `%d addr[sym]` | `d` = address of a local array/structure block, a global or a string
+`faddr` | `%d faddr[f]` | `d` = address of function `f`
+`call` | `%d call[f, a1, a2, ...]` | Call `f` with the arguments; `d` receives the result
+`cmp` | `%a cmp[b]` | Compare `a` with `b` (sets the flags for a following conditional jump)
+@end
+
+@table widths=20,32,48 title="Control operations" label=tab-ashir-control
+Operation | Form | Effect
+`label` | `%_ label[L]` | Defines label `L` at this point.
+`jmp` | `%_ jmp[L]` | Unconditional jump.
+`brf` | `%_ brf[a, cc, b, L]` | Jump to `L` if `a cc b` is **false**.
+`brt` | `%_ brt[a, cc, b, L]` | Jump to `L` if `a cc b` is **true**.
+`je` `jne` `jl` `jle` `jg` `jge` `jb` `jbe` `ja` `jae` (`jz`, `jnz`) | `jge[L]` | Conditional jump after a `cmp`.
+`asm` | `%_ asm[xHEX]` | Assembly text, encoded in hexadecimal; `@var:name` inside it refers to a variable.
+@end
+
+The comparison codes of `brf` and `brt` are `eq`, `ne`, `lt`, `le`, `gt` and `ge`; the signedness of the comparison follows the types of the operands.
+
+@subsection Statement form
+@table widths=30,70 title="Statement-form operations" label=tab-ashir-stmt
+Statement | Effect
+`store[a, v]` | Store `v` at address `a`, with the width of `v`.
+`call[f, a1, ...]` | Call without using the result.
+`inc x` / `dec x` | `x = x + 1` / `x = x - 1`.
+`ret type value` | Return `value` (a variable or constant) converted to `type`.
+`ret void` | Return without a value.
+`volatile_barrier` | Marks a volatile write; generates no code.
+`.raw8 v` (also `.raw16`, `.raw32`, `.raw64`) | Emit raw bytes (used by `emit` and naked functions).
+@end
+
+@section{ashir-data} Global Data Directives
+@table widths=36,64 title="Data directives" label=tab-ashir-directives
+Directive | Meaning
+`.string sym "text"` | A NUL-terminated string literal named `sym` (read-only by convention).
+`.gvar sym size value` | A global scalar of *size* bytes (1, 2, 4 or 8) with an initial value. `sym` is the symbol: the variable name for `general`, `__g_name` for `ungeneral`.
+`.gdata sym xHEX align` | A global array: the bytes (header and elements) in hexadecimal, aligned to *align* bytes.
+`.section sym ".name" "flags"` | Places the function or data `sym` in section `.name` with the given flags.
+@end
+
+@example ir=full show=src,ir title="Global data in ASHIR" label=ex-ashir-data
+general static int64 counter = 7
+ungeneral uint16 MAGIC = 0xBEEF
+general uint32[] table = {1, 2, 3}
+
+@section(".fast")
+func get(): int64 {
+    return counter + MAGIC + table[2];
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d\n", get());
+    return 0;
+}
+@end
+
+@section{ashir-lowering} How ASH Constructs Appear in ASHIR
+@table widths=30,70 title="Lowering of ASH constructs" label=tab-ashir-lowering
+ASH | ASHIR
+`int64 x = a + b * 2;` | `.type x qword`, a temporary for `b * 2`, `mov`, `add`
+`if (c) { } else { }` | `brf` to the else label, body, `jmp` to the end label
+`while (c) { }` | label, `brf` to the exit, body, `jmp` back
+`for (i; c; u) { }` | init, label, `brf`, body, continue label, update, `jmp`
+`repeat (n) { }` | hidden counter `__rpN`, as a `for` loop
+`switch` | hidden subject `__swN` and match flag ([[cf-switch-lowering]])
+`v[i]` | optional `call[__ash_bounds, v, i]`, address arithmetic, `load` / `store`
+`p->f` | `add` of the field offset, then `load` / `store`
+global `g` | `addr[g]` and a typed `load` / `store`
+`f(a, b)` | temporaries for the arguments, `call[f, ...]`
+`asm { }` | `%_ asm[xHEX]`
+`emit(...)` | `.raw8` lines
+@end
+
+@section{ashir-runtime} Runtime Helper Functions
+@index runtime helpers; __ash_alloc; __ash_bounds
+When a program uses arrays, strings, matrices or shifts by a variable amount, the front end appends a block of helper functions to the ASHIR. They are ordinary ASHIR functions, so they appear in every listing produced with `ir=full`, and in the object file as local symbols.
+
+@table widths=30,70 title="Runtime helpers" label=tab-runtime-helpers
+Helper | Purpose
+`__ash_alloc(n, esz, extra)` | Allocates a block for *n* elements of *esz* bytes plus *extra* bytes and a 16-byte header with `calloc`; stores the length and capacity in the header; returns the address of element 0.
+`__ash_free(p)` | Frees a block given the address of element 0.
+`__ash_bounds(base, idx)` | Returns `idx` if it is smaller than the length stored in the header of `base`; otherwise ends the program with `exit(134)`.
+`__ash_strlen(p)` | Length of a NUL-terminated string.
+`__ash_memcpy(d, s, n)` | Copies *n* bytes.
+`__ash_str_new(src)` | Creates a heap string (with header) holding a copy of `src`.
+`__ash_str_set(dst, src)` | Copies `src` into the heap string `dst`, reallocating it if its capacity is too small.
+`__ash_matrix(rows, cols, esz)` | Allocates a two-dimensional array: an array of row addresses, each row an array of *cols* elements.
+`__ash_shl(v, n)`, `__ash_shr(v, n)` | Shifts by a variable amount.
+`__va_get(i, a0, ..., a7)` | Selects a variadic argument ([[fn-variadic-impl]]).
+`__ash_pow(b, e)`, `__ash_sqpow(b, n)` | Run-time `**` and `***` ([[expr-pow]]).
+@end
+
+The following listing shows the ASHIR of the four helpers that every array access relies on, exactly as the compiler emits them:
+
+@example ir=__ash_alloc,__ash_free,__ash_bounds,__ash_matrix show=ir title="The array helpers in ASHIR" label=ex-helpers
+@Entry
+pub func main(): int64 {
+    int64[2][2] m;
+    m[1][1] = 4;
+    return m[1][1];
+}
+@end
+
+@example ir=__ash_strlen,__ash_memcpy,__ash_str_new,__ash_str_set show=ir title="The string helpers in ASHIR" label=ex-helpers-str
+@Entry
+pub func main(): int64 {
+    int64[1] v;
+    return v[0];
+}
+@end
+
+@example ir=__ash_shl,__ash_shr show=ir title="The shift helpers in ASHIR" label=ex-helpers-shift
+@Entry
+pub func main(): int64 {
+    int64 n = 3;
+    int64 v = 1 << n;
+    return v >> n;
+}
+@end
+
+@example ir=__ash_pow,__ash_sqpow,__va_get show=ir title="Power and variadic helpers in ASHIR" label=ex-helpers-pow
+func pick(int64 a, ...): int64 {
+    return va_arg(0);
+}
+
+@Entry
+pub func main(): int64 {
+    int64 b = 3;
+    int64 e = 2;
+    return b ** e + b *** e + pick(1, 2);
+}
+@end
+
+@section{ashir-edit} Working with ASHIR Files
+Because the back end reads ASHIR text, you can save the intermediate representation, modify it and compile the modified file:
+
+@code ash file=w.ash
+@Entry
+pub func main(): int64 {
+    int64 x = 6;
+    return x * 7;
+}
+@end
+
+@session
+$ ashc w.ash -s
+$ cat w.ashir
+$ sed -i 's/imul\[7\]/imul[8]/' w.ashir
+$ ashc w.ashir --elf -s && gcc out/w.o -o w && ./w; echo "exit status $?"
+@end
+
+This makes ASHIR a convenient target for experiments: other tools can generate it, and individual operations can be changed to test the code generator.

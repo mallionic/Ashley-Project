@@ -1,0 +1,284 @@
+@chapter{ch-start} Getting Started
+This chapter explains how to build and install the ASH toolchain, how to compile, link and run your first programs on each supported target, and how to set up the editor support. At the end of the chapter you will be able to turn any `.ash` file into a running program.
+
+@section{start-req} Requirements
+@subsection Running the compiler
+The compiler is distributed as a single native executable:
+
+@table widths=24,76 title="Compiler executables"
+File | Description
+`ashc` | Native executable for Linux x86-64, built with GraalVM `native-image`. No Java installation is needed to run it.
+`ashc.exe` | Native executable for Windows x64, built from the same sources.
+`out/ashc-1.0.0.jar` | The compiler as a Java archive. Runs on any host with a Java 25 (or newer) runtime: `java -jar ashc-1.0.0.jar file.ash ...`
+@end
+
+@subsection Linking and running programs
+`ashc` produces object files, flat binaries and (for 32-bit Linux) stand-alone executables. To turn an object file into a program you also need a linker:
+
+@table widths=30,70 title="Linkers used with ashc"
+Target | Tools
+Linux x86-64 (`--elf`) | `gcc` (recommended when you use the C library) or GNU `ld` from binutils (programs built with `--no-libc`).
+Linux i386 (`@bits(32)` + `--elf`) | `gcc -m32` with the 32-bit C library installed (`gcc-multilib` on Debian and Ubuntu), or `ld -m elf_i386`.
+Windows x64 (`--win`) | Microsoft `link.exe`, or MinGW-w64 `x86_64-w64-mingw32-gcc` / `ld` on Linux.
+Flat binaries (`--compile`) | No linker. The output is loaded directly: by a boot loader, by BIOS (boot sectors), by an emulator or by your own loader.
+Linux i386 executable (`--exe`) | No linker. `ashc` writes the ELF header itself.
+@end
+
+The `objdump` program from binutils is useful to inspect the generated machine code; all disassembly listings in this manual were produced with it.
+
+@subsection Building the compiler from source
+Building `ashc` requires a GraalVM JDK with `native-image` (GraalVM for JDK 25 was used for this release), `javac`, `jar` and the C toolchain that `native-image` uses (on Debian-based systems: `build-essential` and `zlib1g-dev`). The build script can check and install missing dependencies for you.
+
+@section{start-build} Building and Installing
+@index build.sh; SDK
+The repository contains `build.sh` (Linux and macOS shells) and `build.bat` (Windows). Both drive the same steps. Run the script without arguments, or with `help`, to see the list of commands:
+
+@table widths=18,82 title="build.sh commands" label=tab-build-cmds
+Command | Action
+`all` | `clean`, `compile`, `jar`, `native`, `test` and `sdk` in one go.
+`clean` | Remove the `out/` directory.
+`compile` | Embed `nlib` into the compiler (runs `tools/EmbedNlib.java`, which regenerates `Builder/ash/NlibEmbedded.java`) and compile every Java source into `out/classes`.
+`jar` | Build `out/ashc-<version>.jar`.
+`native` | Build the native executable `out/ashc` with GraalVM `native-image`. The build log is written to `out/native-image.log`.
+`agent` | Run the compiler under the GraalVM tracing agent to regenerate the native-image reflection configuration.
+`test` | Run a smoke test of the native binary with `test.ash`.
+`sdk` | Assemble the SDK in `out/dist/ashc-<version>/` and a compressed archive `out/ashc-<version>-<platform>.tar.gz` with its SHA-256 checksum.
+`install` | Install the SDK under the prefix (default `~/.local`): `bin/ashc`, `lib/ashc-<version>.jar`, `share/doc/ashc`, `share/examples`.
+`deps` | Check the required tools and optionally install the missing ones.
+`version` | Print the version that will be built.
+@end
+
+@table widths=26,74 title="build.sh options and environment variables"
+Option / variable | Meaning
+`--prefix DIR` / `PREFIX` | Installation prefix used by `install` (default `$HOME/.local`).
+`--quick` / `QUICK=1` | Faster native compilation (`native-image -Ob`); the binary is slightly slower.
+`--fast-init` / `FAST_INIT=1` | Initialize selected classes at image build time (faster start-up).
+`-v`, `--verbose` / `VERBOSE=1` | List every Java source file while compiling.
+`VERSION` | Version string to build (otherwise read from the file `VERSION`, or `1.0.0`).
+`MAIN_CLASS` | Main class of the jar (the driver `arch.Main` by default).
+@end
+
+A complete build and installation looks like this:
+
+@code sh
+./build.sh deps          # check javac, jar, native-image, zlib headers ...
+./build.sh all           # clean + compile + jar + native + test + sdk
+./build.sh install       # copy bin/ashc into ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
+@end
+
+@note
+The libraries of `nlib` are embedded in the compiler at build time. If you edit a file in `nlib/`, rebuild the compiler, or keep an `nlib/` directory next to your project: a library found on disk always takes precedence over the embedded copy (see [[mod-search]]).
+@end
+
+@section{start-verify} Verifying the Installation
+Ask the compiler for its version and for the list of embedded libraries:
+
+@session
+$ ashc --version
+$ ashc --list-nlib
+@end
+
+`ashc --help` prints a summary of every option; [[ch-cli]] describes them in full.
+
+@section{start-first} Your First Program
+@index hello world
+Create a file named `hello.ash` with the following content:
+
+@code ash file=hello.ash
+@Entry
+pub func main(): int64 {
+    printf("Hello, world!\n");
+    return 0;
+}
+@end
+
+There are four things to notice:
+
+1. `@Entry` marks the entry point of the program. Exactly one function per program carries it.
+2. `pub` makes `main` a public symbol of the object file, so the C start-up code can find it.
+3. The return type comes after the parameter list: `(): int64`.
+4. `printf` is not declared anywhere. When a program calls a function that is neither an ASH function nor declared with `extern`, ASH assumes it is a C function with a variable argument list and emits a call to the external symbol. The C library linked by `gcc` provides it.
+
+@subsection Step 1: compile to an object file
+@session
+$ ashc hello.ash --elf
+$ ls out
+@end
+
+With `--elf` the compiler writes a 64-bit ELF relocatable object into the directory `out/` next to the source file. The name of the object is the name of the source with the extension `.o`.
+
+@subsection Step 2: link and run
+@session
+$ ashc hello.ash --elf -s
+$ gcc out/hello.o -o hello
+$ ./hello
+$ echo "exit status: $?"
+@end
+
+(The option `-s` makes the compiler silent on success.) `gcc` links the object with the C library and the C start-up files. The start-up code calls `main`, and the value that `main` returns becomes the exit status of the process.
+
+@subsection Looking inside: ASHIR and machine code
+Without an output option the compiler stops after the front end and writes the ASHIR intermediate representation into `hello.ashir`:
+
+@session
+$ ashc hello.ash
+$ cat hello.ashir
+@end
+
+The listing shows the function `main` marked as the entry (`[entry]`), the string literal stored as `__str0`, a call to the external `printf` and the return of the constant 0. [[ch-ashir]] documents this format completely. The machine code can be seen with `objdump`:
+
+@session
+$ ashc hello.ash --elf -s
+$ objdump -d -M intel --no-show-raw-insn out/hello.o
+@end
+
+@section{start-entry} Entry Points and Linking Recipes
+@index entry point; _start; main
+The name of the `@Entry` function decides how the program is linked. Two names are common:
+
+- `main` — the C start-up code (`crt1.o`) runs first, initializes the C library and calls `main`. The return value becomes the exit status. **Use `main` whenever the program uses the C library.**
+- `_start` — the function is the first instruction of the process. There is no caller to return to, so the program must finish by calling `exit(...)` (or `sys_exit(...)` from `<syscalls>`). This is the natural choice for `--no-libc` programs, for boot code and for kernels.
+
+@warning
+A `_start` function that simply returns crashes: the stack of a new process does not contain a return address. When the entry function is called `_start`, always end the program with `exit(code);`.
+@end
+
+Many examples in the `examples/` directory use `_start` with the C library. They are linked by renaming the symbol, which turns `_start` into `main` inside the object file:
+
+@code sh
+ashc prog.ash --elf
+objcopy --redefine-sym _start=main out/prog.o out/prog_main.o
+gcc -no-pie out/prog_main.o -o prog
+@end
+
+The examples of this manual that are shown with their output were linked exactly this way when they define `_start`, and with a plain `gcc` command when they define `main`.
+
+@table widths=30,70 title="Linking recipes by target" label=tab-link-recipes
+Program kind | Commands
+64-bit, C library, entry `main` | `ashc p.ash --elf` then `gcc out/p.o -o p`
+64-bit, C library, entry `_start` | `objcopy --redefine-sym _start=main out/p.o m.o` then `gcc -no-pie m.o -o p`
+64-bit, no C library | `ashc p.ash --elf --no-libc` then `ld -e _start out/p.o -o p`
+32-bit, C library | `@bits(32)` in the source, `ashc p.ash --elf`, then `gcc -m32 -no-pie -z noexecstack out/p.o -o p`
+32-bit, no C library | `ashc p.ash --elf --no-libc` then `ld -m elf_i386 -e <entry> ... out/p.o -o p`
+32-bit stand-alone executable | `@bits(32)` and `@originoffs(0x08048000)`, then `ashc p.ash --exe`
+16-bit or 32-bit flat binary | `@bits(16)` (or 32), then `ashc p.ash --compile`; load the `.bin` file yourself
+Windows x64 | `ashc p.ash --win`, then `link /subsystem:console /entry:main p.obj kernel32.lib` or `x86_64-w64-mingw32-gcc p.obj -o p.exe -nostartfiles -Wl,-e,main -lkernel32`
+@end
+
+@section{start-exit} A Program That Uses Its Exit Status
+The exit status is the simplest way for a program to report a result without printing anything. Shells keep it in `$?`. The value is truncated to 8 bits by the operating system, so only 0 to 255 are meaningful.
+
+@example run title="Returning a computed value" label=ex-exit-status
+func square(int64 x): int64 {
+    return x * x;
+}
+
+@Entry
+pub func main(): int64 {
+    return square(6) + square(2);     // 36 + 4 = 40
+}
+@end
+
+@section{start-nolibc} A Program Without the C Library
+With `--no-libc` the compiler never emits a call into the C library. Arrays and strings still work: the compiler supplies its own `calloc`, `free` and `exit` built on the Linux `mmap` and `exit_group` system calls. The result links with `ld` alone and does not depend on any shared library.
+
+@example run nolibc ir name=nolibc.ash title="A statically linked program without libc" label=ex-nolibc-first
+import <syscalls>;
+
+@Entry
+pub func _start(): int64 {
+    println("No C library here.");
+    int64[] squares = {1, 4, 9, 16};
+    sys_exit(squares[2] + squares[3]);      // 25
+    return 0;
+}
+@end
+
+@session
+$ ashc nolibc.ash --elf --no-libc -s
+$ ld -e _start out/nolibc.o -o nolibc
+$ ./nolibc; echo "exit status: $?"
+$ file nolibc
+@end
+
+@section{start-32} A 32-bit Program
+`@bits(32)` switches the whole file to the i386 instruction set. Integers declared as `int64` are still accepted, but the natural register size is now 32 bits, pointers are 4 bytes wide and arguments are passed on the stack (the `cdecl` convention).
+
+@example run bits=32 asm title="A 32-bit program linked with the 32-bit C library" label=ex-32-first
+@bits(32)
+
+func add(int32 a, int32 b): int32 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int32 {
+    printf("32-bit says %d\n", add(30, 12));
+    return 0;
+}
+@end
+
+@section{start-16} A 16-bit Flat Binary
+With `@bits(16)` and `--compile` the compiler emits real-mode 8086 code with no header at all. `@originoffs(0x100)` tells the compiler the address at which the image will be loaded (here, the address used by DOS `.COM` programs). The test suite of the project runs such images in a small emulator that executes the code and prints the value of `AX` when the entry function returns.
+
+@example bits=16 org=0x100 run asm asmlimit=24 title="A 16-bit flat binary executed in the emulator" label=ex-16-first
+@bits(16)
+@originoffs(0x100)
+
+func triple(int16 x): int16 {
+    return x * 3;
+}
+
+@Entry
+pub func _start(): int16 {
+    return triple(14);                      // AX = 42
+}
+@end
+
+@section{start-win} A Windows Program
+With `--win` the compiler writes a COFF object for 64-bit Windows and uses the Microsoft x64 calling convention for every external call. The following program writes to the console through `kernel32.dll` and ends with `ExitProcess`. It was linked with MinGW-w64 and executed under Wine while this manual was built.
+
+@example win run asm=main title="Writing to the Windows console" label=ex-win-first
+extern uint64 GetStdHandle(int32 nStdHandle);
+extern int32  WriteFile(uint64 h, uint64 buf, uint32 n, uint64 written, uint64 overlapped);
+extern void   ExitProcess(uint32 code);
+
+@Entry
+pub func main(): void {
+    uint64 h = GetStdHandle(-11);           // STD_OUTPUT_HANDLE
+    uint32 written = 0;
+    WriteFile(h, "Hello, Windows!\n", 16, &written, 0);
+    ExitProcess(0);
+}
+@end
+
+@section{start-files} Files Created by the Compiler
+@table widths=30,70 title="Files written by ashc"
+Path | Content
+`<name>.ashir` | ASHIR text, written next to the source when no output mode is given.
+`out/<name>.o` | ELF object (`--elf`).
+`out/<name>.obj` | COFF object (`--win`).
+`out/<name>.bin` | Flat binary (`--compile`).
+`out/<name>` | 32-bit Linux executable (`--exe`).
+`logs/build.log` | Detailed internal log of the last build (buffer writes, symbols, relocations, a hexadecimal dump of the output). Useful when reporting a compiler bug.
+@end
+
+The output location can be changed with `-o file`, `-o directory/` or `--outdir directory` ([[cli-output]]).
+
+@section{start-editor} Editor Support
+@index VS Code
+The directory `vscode-ash/` contains an extension for Visual Studio Code, VSCodium and VS Code Insiders. It provides syntax highlighting for `.ash` and `.ashir` files, two color themes (*ASH Dark* and *ASH Light*), file icons, snippets, and a linter that reports errors while you type. Install it with:
+
+@code sh
+cd vscode-ash
+./install_extension.sh            # Linux / macOS   (--remove uninstalls it)
+install_extension.bat             # Windows
+@end
+
+Restart the editor and select a theme with **Ctrl+K Ctrl+T**. [[tool-vscode]] describes the linter, the snippets and the settings.
+
+@section{start-next} Where to Go Next
+- [[ch-cli]] lists every command line option.
+- [[ch-lex]] starts the description of the language.
+- The `examples/` directory contains fifty small programs, one per feature; [[app-examples]] indexes them.

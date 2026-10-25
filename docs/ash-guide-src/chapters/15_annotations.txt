@@ -1,0 +1,619 @@
+@chapter{ch-annotations} Annotations (Attributes)
+@index annotations; attributes; @
+An **annotation** (also called an *attribute*) is a word that starts with the character `@` and gives the compiler extra information. You write it on its own line, just above the thing it talks about: a function, a class, a global variable, or the whole file. Annotations do not compute anything by themselves; they change *how* the compiler treats your code.
+
+This chapter explains every annotation of ASH from the beginning. For each one you will find, in this order: what it does in plain words, how to write it, where you may write it, a complete program that uses it (compiled and run while this manual was built), what changes in the machine code, and the mistakes that beginners make most often.
+
+@section{ann-intro} Annotations in Five Minutes
+You have already used one annotation in every program: `@Entry`.
+
+@example run title="The annotation you always use" label=ex-ann-first
+@Entry
+pub func main(): int64 {
+    printf("This function runs first because of @Entry.\n");
+    return 0;
+}
+@end
+
+Read the program line by line:
+
+@table widths=12,30,58 title="Line by line"
+Line | Code | Meaning
+1 | `@Entry` | An annotation. It tells the compiler: *the function written below is where the program starts*.
+2 | `pub func main(): int64 {` | The function that the annotation talks about.
+3 | `printf(...)` | Prints a message.
+4 | `return 0;` | Ends the program successfully.
+@end
+
+Four things are true of every annotation:
+
+1. It begins with `@` followed by a name, with no space: `@Entry`, not `@ Entry`.
+2. Some annotations take **arguments** in parentheses: `@bits(32)`. Some take a number in brackets: `@ovr[5]`. Some take nothing: `@naked`.
+3. It applies to the **next** function, class or global variable written after it, or (for file annotations) to the whole file.
+4. Several annotations can be stacked, one per line, above the same function.
+
+@example run title="Several annotations on one function" label=ex-ann-stack
+@Greet() {
+    printf("(about to run the function)\n");
+}
+
+@Entry
+@Greet()
+pub func main(): int64 {
+    printf("Hello!\n");
+    return 0;
+}
+@end
+
+@section{ann-kinds} The Three Kinds of Annotations
+@table widths=24,40,36 title="Kinds of annotations" label=tab-ann-kinds
+Kind | Annotations | Applies to
+File annotations | `@bits`, `@originoffs`, `@beautycode`, `@bounds`, `@strict`, `@nolibc` | The whole file. Write them at the top.
+Function annotations | `@Entry`, `@naked`, `@msabi` / `@efiapi`, `@section`, `@attribute`, `@ovr` / `@override`, your own annotations | The function (or class) written right after them. `@section` and `@attribute` also apply to global variables.
+Statement annotation | `@emit(...)` | It is itself a statement inside a function body.
+@end
+
+@section{ann-summary} Summary Table
+@table widths=30,16,54 title="All built-in annotations" label=tab-annotations
+Annotation | Kind | Effect
+`@Entry` / `@entry` | function | Marks the entry point of the program.
+`@bits(16|32|64)` | file | Selects the processor mode of the whole file.
+`@originoffs(addr)` | file | Load address of a flat image or `--exe` executable.
+`@beautycode(true|false)` | file | Compact frames and bounds checks (true, the default) or full frames everywhere and no checks (false).
+`@bounds(true|false)`, `@boundscheck(...)` | file | Turns array bounds checking on or off.
+`@strict` / `@strict(true|false)` | file | Strict mode ([[ch-strict]]).
+`@nolibc` / `@nolibc(true|false)` | file | Same as `--no-libc`.
+`@naked` | function | No prologue, epilogue or `ret`: only your `asm` and `emit`.
+`@msabi`, `@efiapi`, `@EFIAPI` | function | Receives arguments with the Microsoft x64 convention.
+`@section(".name"[, "flags"])` | function, global | Places the function or data in its own section.
+`@attribute(section(".name"))`, `@__attribute__((section(...)))` | function, global | GCC-style spelling of `@section`.
+`@ovr`, `@ovr[N]`, `@override`, `@override(N)` | function, class | Sets the override right ([[mod-override]]).
+`@emit(b, ...)` | statement | Emits raw bytes ([[asm-emit]]).
+`@Name(args)` (your own) | function | Inserts the body of your annotation at the start of the function ([[ann-user]]).
+@end
+
+The names `bits`, `originoffs`, `beautycode`, `bounds`, `nolibc`, `strict`, `ovr` and `override` may be written in any mix of upper and lower case. All other names must be written exactly as shown.
+
+@section{ann-entry} @Entry: Where the Program Starts
+@index @Entry
+**What it does.** A program is made of many functions. The computer needs to know which one to run first. `@Entry` marks that function. Without it, the program has no starting point.
+
+**How to write it.** `@Entry` (or `@entry`) alone, on the line before `func`. It takes no arguments.
+
+**Where.** Before exactly one function of the whole program (main file plus imported files). The function should be `pub`, so that the operating system's start-up code can find it.
+
+@example run title="@Entry with the conventional name main" label=ex-entry-main
+func helper(): int64 {
+    return 20;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 a = helper();
+    printf("helper gave %d\n", a);
+    return a + 22;
+}
+@end
+
+**What changes in the machine code.** In ASHIR the function is preceded by `[entry]`. In an object file the function is a global symbol. In a flat binary (`--compile`) the entry function is placed first, so that the very first byte of the file is its first instruction. When the entry function is called `_start`, the compiler also aligns the stack to 16 bytes at its beginning (`and rsp, -16`).
+
+@example ir show=src,ir title="[entry] in ASHIR" label=ex-entry-ir
+@Entry
+pub func main(): int64 {
+    return 7;
+}
+@end
+
+**Choosing the name.** Call the function `main` when your program uses the C library (`printf`, `malloc` ...): the C start-up code calls `main` for you. Call it `_start` when the program uses no C library; it must then end with `exit(...)` or `sys_exit(...)` ([[start-entry]]).
+
+**Common mistakes.**
+
+@example fail title="Two entry points" translate="error: ASHIR: there are multiple [entry] functions\n1 error generated."
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+
+@Entry
+pub func other(): int64 {
+    return 0;
+}
+@end
+
+@example fail title="@Entry written twice on the same function" translate="<input>:3:1: error: the attribute @Entry appears twice\n    3 | pub\n      | ^^^\n1 error generated."
+@Entry
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+@section{ann-bits} @bits: Choosing the Processor Mode
+@index @bits
+**What it does.** x86 processors can run in three modes: 16-bit (the mode in which a PC starts), 32-bit and 64-bit. `@bits` tells the compiler which one your file is written for. It decides which instructions are generated, how big pointers are and how big the largest integer is.
+
+**How to write it.** `@bits(16)`, `@bits(32)` or `@bits(64)`. Without it, the file is 64-bit.
+
+**Where.** Once, at the top of the file. The command line option `--bits N` overrides it.
+
+@table widths=16,28,56 title="What @bits changes" label=tab-bits-effects
+Value | Registers and pointers | Typical use and output
+`64` (default) | 64-bit (`rax`, 8-byte pointers) | Modern programs. `--elf` gives an ELF64 object, `--win` a COFF AMD64 object.
+`32` | 32-bit (`eax`, 4-byte pointers); `int64` is held in 32 bits | 32-bit Linux programs (`gcc -m32`), protected-mode kernels. `--elf` gives ELF32, `--exe` a complete executable.
+`16` | 16-bit (`ax`, 2-byte addresses); every integer is held in 16 bits | Boot sectors, DOS programs, BIOS code. Only `--compile` (a flat binary).
+@end
+
+@example run bits=32 asm=main show=src,out,asm title="The same idea compiled for 32 bits" label=ex-bits32
+@bits(32)
+
+@Entry
+pub func main(): int32 {
+    int32 total = 0;
+    for (int32 i = 1; i <= 4; i++) {
+        total = total + i * 10;
+    }
+    printf("total = %d\n", total);
+    return 0;
+}
+@end
+
+In the disassembly you can see 32-bit registers (`eax`, `ecx`, `ebp`) and arguments pushed on the stack with `push` before `call printf`.
+
+@example bits=16 org=0x100 run asm asmlimit=20 title="A 16-bit program (run in the 8086 emulator)" label=ex-bits16b
+@bits(16)
+@originoffs(0x100)
+
+@Entry
+pub func _start(): int16 {
+    int16 a = 6;
+    int16 b = 7;
+    return a * b;           // AX = 42
+}
+@end
+
+**Common mistakes.**
+
+@example fail title="@bits written twice" translate="<input>:2:6: error: @bits(...) may appear only once\n    2 | (\n      |      ^\n1 error generated."
+@bits(64)
+@bits(32)
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+- Using `printf` in a 16-bit file: a flat binary has no C library, so the build fails. Use `asm` with BIOS calls instead.
+- Expecting `int64` to hold big values in 16-bit or 32-bit mode: it is limited by the processor mode ([[type-bits]]).
+
+@section{ann-origin} @originoffs: Where the Program Will Be Loaded
+@index @originoffs
+**What it does.** A flat binary is copied into memory at an address chosen by whoever loads it (the BIOS, DOS, a boot loader). The code contains absolute addresses (for example, the address of a text string), so the compiler must know that load address in advance. `@originoffs` tells it.
+
+**How to write it.** `@originoffs(number)`, for example `@originoffs(0x7C00)`. The special words `offset` or `org` use the origin given by the build environment.
+
+**Where.** Once, at the top of the file. It matters for `--compile` and `--exe`; it is ignored for `--elf` and `--win`, because there the linker chooses the addresses.
+
+@table widths=26,74 title="Common origins"
+Value | Who loads the program there
+`0x7C00` | The BIOS loads the first sector of a disk (a *boot sector*) here.
+`0x100` | DOS loads `.COM` programs here.
+`0x08048000` | The traditional address of 32-bit Linux executables, used with `--exe`.
+`0x100000` | Many boot loaders load kernels at 1 MiB.
+@end
+
+@example exe run hexdump hexlines=4 show=src,out,hex title="@originoffs for a 32-bit Linux executable" label=ex-origin-exe
+@bits(32)
+@originoffs(0x08048000)
+
+@Entry
+pub func _start(): int32 {
+    exit(3);
+    return 0;
+}
+@end
+
+The entry address stored in the header (bytes 24 to 27 of the file: `54 80 04 08`, that is `0x08048054`) is the origin plus the 84 bytes of the header.
+
+**Common mistake.** Writing a wrong origin produces a program whose strings and globals are read from the wrong addresses; nothing warns you at compile time. Always use the address at which your loader really places the image.
+
+@section{ann-beautycode} @beautycode: Clean Code or Full Frames
+@index @beautycode; leaf function
+**What it does.** It chooses between two styles of generated code for the whole file.
+
+- `@beautycode(true)` (the default): the code is as clean as possible. A small function that calls nothing and needs no memory gets no *stack frame* (no `push rbp` / `leave`), and every array access is checked against the array length.
+- `@beautycode(false)`: every function gets a full stack frame, and array accesses are **not** checked. The code of each function looks the same, which is convenient with debuggers, and arrays are faster but unprotected.
+
+**How to write it.** `@beautycode(true)` or `@beautycode(false)`. `false`, `0` and `off` mean off; any other word means on.
+
+**Where.** Once, at the top of the file.
+
+@table widths=24,38,38 title="Effect of @beautycode" label=tab-beautycode
+Aspect | `@beautycode(true)` (default) | `@beautycode(false)`
+Stack frames | Only where needed. | Always (like the `-e` option).
+Saved registers | Only the ones actually used. | Only the ones actually used.
+Array bounds checks | On (unless `@bounds(false)`). | Off (unless `@bounds(true)`).
+@end
+
+@example asm=add show=src,asm title="A small function with @beautycode(true): no frame" label=ex-beauty-on
+@beautycode(true)
+
+func add(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    return add(40, 2);
+}
+@end
+
+@example asm=add show=src,asm title="The same function with @beautycode(false): full frame" label=ex-beauty-off
+@beautycode(false)
+
+func add(int64 a, int64 b): int64 {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    return add(40, 2);
+}
+@end
+
+Compare the two listings: the second one starts with `push rbp`, `mov rbp, rsp`, `sub rsp, ...` and ends with `leave`.
+
+@section{ann-bounds} @bounds: Array Checking On or Off
+@index @bounds; bounds checking
+**What it does.** Every array in ASH knows its length. With checking on, each `v[i]` first verifies that `i` is smaller than the length; if it is not, the program stops with exit status 134 instead of reading or writing the wrong memory. `@bounds` turns this checking on or off, independently of `@beautycode`.
+
+**How to write it.** `@bounds(true)` or `@bounds(false)` (also spelled `@boundscheck`).
+
+**Where.** Once, at the top of the file. Once `@bounds` is written, `@beautycode` no longer changes the checking.
+
+@example run expect=134 title="With checking on, a wrong index stops the program" label=ex-bounds-on
+@bounds(true)
+
+@Entry
+pub func main(): int64 {
+    int64[4] v;
+    int64 i = 4;              // valid indexes are 0, 1, 2, 3
+    printf("before\n");
+    fflush(0);
+    v[i] = 1;                 // stops here with exit status 134
+    printf("never printed\n");
+    return 0;
+}
+@end
+
+@example run show=src,out title="With checking off, valid code runs without the checks" label=ex-bounds-off
+@bounds(false)
+
+@Entry
+pub func main(): int64 {
+    int64[4] v;
+    v[3] = 7;                 // no check is generated for this access
+    printf("%d\n", v[3]);
+    return 0;
+}
+@end
+
+**When to turn it off.** Only in code that has been tested and must be as small or as fast as possible. A wrong index with checking off silently damages other data.
+
+@section{ann-strict} @strict: Extra Safety Checks
+@index @strict
+**What it does.** It turns on *strict mode*: the compiler also rejects numbers that do not fit their variable, silent loss of bits when a big value is stored in a small variable, and `return` statements that do not match the function. [[ch-strict]] lists every rule.
+
+**How to write it.** `@strict`, `@strict(true)` or `@strict(false)`. The line `"use strict";` at the very top of a file does the same as `@strict`.
+
+@example run title="Strict mode accepts correct code" label=ex-strict-ann
+@strict
+
+@Entry
+pub func main(): int64 {
+    uint8 small = 200;
+    uint64 big = 70000;
+    uint16 medium = (uint16)big;       // the cast says: I really want to keep only 16 bits
+    printf("%d %d\n", small, medium);
+    return 0;
+}
+@end
+
+@example fail title="...and rejects a silent loss of bits" translate="error: strict: cannot assign a 64-bit value to 'medium' (uint16, 16 bits); use an explicit cast\n1 error generated."
+@strict
+
+@Entry
+pub func main(): int64 {
+    uint64 big = 70000;
+    uint16 medium = big;
+    return 0;
+}
+@end
+
+@section{ann-nolibc} @nolibc: Programs Without the C Library
+@index @nolibc
+**What it does.** Normally a program may use the C library: `printf`, `malloc`, files... `@nolibc` promises that this program will run without it, for example as a tiny static program or on a computer with no operating system. The compiler then provides its own memory allocation and `exit`, and the program is linked with `ld` alone.
+
+**How to write it.** `@nolibc`, `@nolibc(true)` or `@nolibc(false)`. It is the same as the command line option `--no-libc`.
+
+**Where.** Anywhere at top level; it is detected even before the `%if` directives are evaluated, so `%if ASH_NO_LIBC` sees it.
+
+@example run nolibc show=src,out title="A program that declares @nolibc" label=ex-nolibc-ann
+@nolibc
+import <syscalls>;
+
+@Entry
+pub func _start(): int64 {
+    print("2 + 3 = ");
+    print_int(2 + 3);
+    println("");
+    sys_exit(0);
+    return 0;
+}
+@end
+
+**Common mistakes.** Calling `printf` (or any C function) in a `@nolibc` program: the linker reports "undefined reference". Use `print`, `println` and `print_int` from `<syscalls>`.
+
+@section{ann-naked} @naked: Functions Without Compiler Code
+@index @naked
+**What it does.** Normally the compiler adds instructions at the beginning and end of each function (to make room for variables, save registers and return). A `@naked` function gets **none** of that: its machine code is exactly the instructions you write in `asm` blocks and `emit` statements, nothing more. You must write the final `ret` yourself.
+
+**How to write it.** `@naked` on the line before `func`.
+
+**Rules inside a naked function.**
+
+- Only `asm { }`, `asm("...")` and `emit(...)` statements are allowed.
+- No variables, no ASH function calls, no `return`. Assembly placeholders such as `{x}` are not available.
+- The arguments are found where the calling convention puts them: on x86-64 in `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`; in 32-bit code on the stack at `[esp+4]`, `[esp+8]`...
+- The result must be left in `rax` (`eax` in 32-bit code).
+
+@example run asm=add3,answer,twice show=src,out,asm title="Three naked functions" label=ex-naked
+@naked
+func add3(int64 a, int64 b, int64 c): int64 {
+    asm {
+        lea rax, [rdi + rsi]     ; rax = a + b
+        add rax, rdx             ; rax = a + b + c
+        ret
+    }
+}
+
+@naked
+func answer(): int64 {
+    emit(0xB8, 0x2A, 0x00, 0x00, 0x00);    // mov eax, 42
+    emit(0xC3);                            // ret
+}
+
+@naked
+func twice(int64 x): int64 {
+    asm volatile("lea rax, [rdi + rdi]; ret");
+}
+
+@Entry
+pub func main(): int64 {
+    printf("add3=%d answer=%d twice=%d\n", add3(1, 2, 3), answer(), twice(21));
+    return 0;
+}
+@end
+
+Look at the disassembly: `add3` is exactly three instructions, with no `push rbp`.
+
+**When to use it.** Interrupt handlers (which end with `iretq`), the first instructions of a kernel or boot loader, and functions whose bytes must be exact.
+
+@section{ann-msabi} @msabi and @efiapi: The Microsoft Calling Convention
+@index @efiapi; @msabi; UEFI
+**What it does.** When one function calls another, both must agree where the arguments are placed. Linux uses one agreement (the *System V* convention: `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`); Windows and UEFI firmware use another (the *Microsoft x64* convention: `rcx`, `rdx`, `r8`, `r9`). `@msabi` (also written `@efiapi` or `@EFIAPI`) makes a function receive its arguments the Microsoft way.
+
+**Where.** Before a function that will be called by Windows or by UEFI firmware: the entry point of a UEFI application, or a callback given to a Windows API. With `--win` all external calls already use the Microsoft convention.
+
+@example run asm=from_windows show=src,out,asm title="A function that receives Microsoft-convention arguments" label=ex-msabi
+@msabi
+pub func from_windows(int64 a, int64 b): int64 {
+    return a - b;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 r = 0;
+    int64 target = &from_windows;   // the address of the function
+    asm {
+        mov rax, target
+        mov rcx, 50                 ; first argument, Microsoft style
+        mov rdx, 8                  ; second argument
+        sub rsp, 32                 ; shadow space required by the convention
+        call rax
+        add rsp, 32
+        mov r, rax
+    }
+    printf("from_windows(50, 8) = %d\n", r);
+    return 0;
+}
+@end
+
+The disassembly of `from_windows` shows the arguments being read from `rcx` and `rdx`.
+
+@code ash top
+// The shape of a UEFI application entry point (build with --win, link as an EFI image)
+@efiapi
+pub func efi_main(uint64 image, uint64 systab): uint64 {
+    return 0;          // EFI_SUCCESS
+}
+@end
+
+@section{ann-section} @section and @attribute: Choosing Where Code and Data Go
+@index @section; ELF section
+**What it does.** An object file is divided into *sections*. Normally ASH puts all code and data into one section called `.ashtext`. `@section(".name")` puts the next function or global variable into a section of its own. A *linker script* can then place that section at a precise address, which kernels and firmware need (for example a multiboot header that must be in the first 8 KiB of a kernel image).
+
+**How to write it.**
+
+@code text nocheck
+@section(".name")
+@section(".name", "flags")
+@attribute(section(".name"))            // the same, in GCC style
+@__attribute__((section(".name")))      // the same, exactly as GCC writes it
+@end
+
+The flags say what the section is allowed to do: `a` (allocated in memory), `w` (writable), `x` (executable). Without flags a function's section is allocated and executable and a variable's section is allocated.
+
+@example run name=sections.ash title="Functions and data in their own sections" label=ex-section
+@section(".fast_text")
+func hot(int64 x): int64 {
+    return x * 2;
+}
+
+@attribute(section(".more_text"))
+func warm(int64 x): int64 {
+    return x * 3;
+}
+
+@section(".tables", "a")
+general uint32[] lut = {0xCAFEBABE, 7, 8}
+
+@section(".mydata", "aw")
+general static int64 counter = 5
+
+@Entry
+pub func main(): int64 {
+    counter = counter + 1;
+    printf("hot=%d warm=%d lut[0]=%x counter=%d\n", hot(21), warm(5), lut[0], counter);
+    return 0;
+}
+@end
+
+The tool `readelf` shows the new sections and their flags (`A` allocated, `W` writable, `X` executable):
+
+@session
+$ ashc sections.ash --elf -s && readelf -S -W out/sections.o | grep -E "Name|fast|more|tables|mydata"
+@end
+
+**Common mistake.** `@attribute` supports only `section`; other GCC attributes such as `aligned` or `noinline` are rejected.
+
+@section{ann-ovr} @ovr and @override: Which Definition Wins
+@index @ovr; @override
+**What it does.** When a program and its libraries define two functions with the same name, ASH keeps the one with the higher *override right*, a number. Normal functions have right 0 and library functions -1, so your own function wins over a library function automatically. `@ovr[N]` gives the next function (or class) the right *N*.
+
+**How to write it.** `@ovr` (right 1), `@ovr[N]`, `@ovr(N)`, `@override`, `@override[N]` or `@override(N)`. *N* may be negative.
+
+@code ash file=lib_quiet.ash
+pub func greet(): void {
+    printf("hello from the library\n");
+}
+@end
+
+@example run name=main_ovr.ash title="@ovr chooses between two definitions" label=ex-ovr-ann
+import "lib_quiet.ash";
+
+@ovr[10]
+pub func greet(): void {
+    printf("hello from the main file (right 10)\n");
+}
+
+@Entry
+pub func main(): int64 {
+    greet();
+    return 0;
+}
+@end
+
+[[mod-override]] explains every rule, including ties and the assignment form `greet.override = 10;`.
+
+@section{ann-emit} @emit: Raw Bytes as a Statement
+`@emit(b1, b2, ...)` is written inside a function, like a statement. It puts the listed bytes into the machine code at that point, exactly like `emit(...)`. It is useful for instructions that you know by their bytes.
+
+@example run asm=main show=src,out,asm title="@emit inside a function" label=ex-emit-ann
+@Entry
+pub func main(): int64 {
+    int64 r = 0;
+    @emit(0x90, 0x90);                    // two nop instructions
+    @emit(0xB8, 0x05, 0x00, 0x00, 0x00);  // mov eax, 5
+    asm volatile("mov {r}, rax");
+    printf("r=%d\n", r);
+    return 0;
+}
+@end
+
+@section{ann-user} Your Own Annotations
+@index user annotation
+**What it does.** You can invent annotations. An annotation that you define contains a block of code. Every function marked with your annotation gets that code inserted at its beginning. This is a simple way to add the same logging, counting or checking to many functions without copying the code.
+
+**How to define one.**
+
+@code text nocheck
+@Name(parameters) {
+    statements
+}
+@end
+
+The parentheses are required in the definition, even when there are no parameters: `@Log() { ... }`. Parameters have a type and a name, like function parameters. If you write only a type, `@Name(uint32)`, the parameter is called `value`.
+
+**How to use one.** Write `@Name(arguments)` before a function. Without parameters you may write `@Name()` or just `@Name`.
+
+@example run ir=work show=src,out,ir title="Defining and using annotations" label=ex-user-ann
+@Log() {
+    printf("-> entering a function\n");
+}
+
+@Trace(uint32 level) {
+    printf("   trace level %d\n", level);
+}
+
+@Count(uint32) {
+    printf("   count=%d\n", value);
+}
+
+@Log
+@Trace(3)
+@Count(9)
+func work(int64 x): int64 {
+    return x + 1;
+}
+
+@Entry
+@Trace(7)
+pub func main(): int64 {
+    return work(41);
+}
+@end
+
+The ASHIR of `work` shows what happened: the parameters `level` and `value` became local variables with the values 3 and 9, and the `printf` calls of the three annotations were placed before the body of the function, in the order in which the annotations were written.
+
+@example run title="Annotations with text arguments, used twice" label=ex-user-ann-text
+@Tag(string label) {
+    printf("[%s] ", label);
+}
+
+@Tag("math")
+@Tag("pure")
+func square(int64 x): int64 {
+    return x * x;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("%d\n", square(12));
+    return 0;
+}
+@end
+
+**How it works.** User annotations are expanded on the tokens of the program before parsing ([[arch-tokenpasses]]). The inserted code is compiled exactly as if you had typed it at the beginning of the function, so it can use the function's parameters and global variables.
+
+**Common mistakes.**
+
+@example fail title="A definition without parentheses" translate="<input>:1:6: error: unknown attribute @Log\n    1 | {\n      |      ^\n1 error generated."
+@Log {
+    printf("called\n");
+}
+
+@Entry
+pub func main(): int64 {
+    return 0;
+}
+@end
+
+- Using an annotation that was never defined: the compiler reports "unknown attribute".
+- Annotations defined in an imported file can be used in the file that imports it. If two files define the same annotation, override rights decide which one is used (`@Name.override = N;`).
+
+@section{ann-placement} Placement Rules
+- File annotations (`@bits`, `@originoffs`, `@beautycode`, `@bounds`, `@strict`, `@nolibc`) may appear anywhere at top level, but write them at the top of the file so that readers see them first.
+- Function annotations go immediately before `func`, and before `pub` or `priv`: write `@naked pub func ...`, not `pub @naked func ...`.
+- `@section` and `@attribute` may precede a function or a global variable.
+- `@emit` appears inside a function body.
+- Several annotations may be stacked; their order matters only for user annotations, whose code is inserted in the order written.

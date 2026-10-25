@@ -1,0 +1,135 @@
+@appendix{app-grammar} Grammar Summary
+@index grammar
+This appendix summarizes the syntax of ASH in an extended BNF notation: `[ x ]` is optional, `{ x }` repeats zero or more times, `a | b` is an alternative, quoted text is literal, and names in italics in the rest of the manual are written here in lowercase. Directives (`%...`) and assembly bodies are processed before this grammar applies ([[arch-front]]).
+
+@section{gram-program} Program Structure
+@code text nocheck
+program        = [ "\"use strict\"" [";"] ] { top-item } ;
+top-item       = import | extern | global | struct-decl | typedef | define | macro
+               | redefine | override-assign | { annotation } ( function | class | global ) ;
+
+import         = "import" ( "<" name ">" | string ) ";" ;
+extern         = "extern" ( type | "func" ) name "(" [ ext-params ] ")" ";" ;
+ext-params     = ext-param { "," ext-param } [ "," "..." ] | "..." ;
+ext-param      = type [ name ] ;
+
+global         = ( "general" | "ungeneral" | "runnable" ) [ "static" ] [ "const" ]
+                 type name [ "=" global-init ] [ ";" ] ;
+global-init    = const-expr | "{" const-expr { "," const-expr } [","] "}" | string ;
+
+struct-decl    = "typedef" "struct" [ name ] "{" { field } "}" name ";"
+               | "struct" name "{" { field } "}" ";" ;
+field          = type name ";" ;
+typedef        = "typedef" type name [ ";" ] ;
+define         = "define" name tokens [ ";" ] ;
+macro          = "macro" name "{" { statement } "}" ;
+redefine       = "redefine" [ "global" ] type name "(" params ")" type name "(" params ")"
+               | "redefine" [ "global" ] type name "(" params ")" block ;
+override-assign = [ "@" ] name { "." name } "." "override" "=" integer ";" ;
+@end
+
+@section{gram-functions} Functions and Classes
+@code text nocheck
+annotation     = "@" name [ "(" [ ann-args ] ")" | "[" [ integer ] "]" ] ;
+ann-definition = "@" name "(" [ params ] ")" block ;
+
+function       = [ "pub" | "priv" ] "func" [ type ] name "(" [ params ] ")" [ ":" type ] body ;
+params         = param { "," param } [ "," "..." ] ;
+param          = type name [ "[" "]" ] ;
+body           = "{" { crack | statement } "}" ;
+crack          = name "->" "(" [ params ] ")" block [ ";" ] ;
+
+class          = [ "pub" | "priv" ] "class" name [ "(" ")" ] "{" { [ "pub" | "priv" ] function } "}" ;
+@end
+
+@section{gram-types} Types
+@code text nocheck
+type           = base-type { "*" } ;
+base-type      = int-type | "bool" | "char" | "string" | "cstring" | "ptr" | "void"
+               | "float" | "float32" | "double" | "float64" | struct-name | alias ;
+int-type       = "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
+               | "byte" | "word" | "dword" | "qword" | "int" | "uint" | "short" | "ushort"
+               | "long" | "ulong" | "llong" | "ullong" | "uchar" | "schar" | "size_t" | "ssize_t"
+               | "intptr_t" | "uintptr_t" | "ptrdiff_t" | "int8_t" ... "uint64_t"
+               | c-type-words ;
+c-type-words   = { "unsigned" | "signed" | "long" | "short" | "int" | "char" } ;
+@end
+
+@section{gram-statements} Statements
+@code text nocheck
+block          = "{" { statement } "}" ;
+statement      = declaration | assignment | expression-stmt | if | while | for | repeat | loop
+               | switch | "break" [";"] | "continue" [";"] | return | terminate | unreturnable
+               | asm | emit | matrix | crack-call | block-macro-use | ";" ;
+
+declaration    = [ "volatile" ] type name [ array-dims ] [ "=" init ] [ ";" ]
+               | [ "volatile" ] type array-dims name [ "=" init ] [ ";" ] ;
+array-dims     = "[" [ expr ] "]" [ "[" [ expr ] "]" ] ;
+init           = expr | "{" [ init { "," init } [ "," ] ] "}" ;
+
+assignment     = lvalue ( "=" | compound-op ) expr [ ";" ]
+               | lvalue ( "++" | "--" ) [ ";" ] | ( "++" | "--" ) name [ ";" ] ;
+lvalue         = name | name index { index } | "*" unary | member-chain ;
+compound-op    = "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "|=" | "^=" ;
+expression-stmt = call [ ";" ] ;
+crack-call     = name "." name "=" expr { "," expr } [ ";" ] ;
+
+if             = "if" "(" cond ")" block { ( "elif" | "else" "if" ) "(" cond ")" block } [ "else" block ] ;
+while          = "while" "(" cond ")" block ;
+for            = "for" "(" [ for-init ] ";" [ cond ] ";" [ for-update ] ")" block ;
+repeat         = "repeat" "(" expr ")" block ;
+loop           = "loop" block ;
+switch         = "switch" "(" expr ")" "{" { case-label { statement } } "}" ;
+case-label     = "case" expr ":" | "default" ":" ;
+
+return         = "return" [ expr ] [ ";" ] ;
+terminate      = "terminate" [ expr ] [ ";" ] ;
+unreturnable   = ( "unreturnable" | "unreturn" ) ( expr | type ) [ ";" ] ;
+
+asm            = [ "volatile" ] "asm" "{" assembly "}"
+               | "asm" [ "volatile" ] "(" string { string } [ ":" operands [ ":" operands [ ":" clobbers ] ] ] ")" [ ";" ] ;
+emit           = ( "emit" | "emit8" | "emit16" | "emit32" | "emit64" | "@emit" | "ashley" "." name )
+                 "(" expr { "," expr } ")" [ ";" ] ;
+matrix         = "matrix" name "[" "]" "[" "]" "{" { "[" type expr "]" [ "," ] } "}" [ ";" ]
+               | "matrix" type name "[" expr "]" "[" expr "]" [ ";" ] ;
+@end
+
+@section{gram-expressions} Expressions and Conditions
+@code text nocheck
+cond           = or-cond ;
+or-cond        = and-cond { "||" and-cond } ;
+and-cond       = not-cond { "&&" not-cond } ;
+not-cond       = "!" "(" cond ")" | "(" cond ")" | comparison | expr ;
+comparison     = expr ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) expr ;
+
+expr           = bit-or ;
+bit-or         = bit-xor { "|" bit-xor } ;
+bit-xor        = bit-and { "^" bit-and } ;
+bit-and        = shift { "&" shift } ;
+shift          = additive { ( "<<" | ">>" ) additive } ;
+additive       = term { ( "+" | "-" ) term } ;
+term           = power { ( "*" | "/" | "%" ) power } ;
+power          = unary [ ( "**" | "***" ) power ] ;
+unary          = ( "-" | "+" | "~" | "&" | "*" | "#" | "++" | "--" ) unary
+               | "(" type ")" unary | postfix ;
+postfix        = primary { index | "++" | "--" } ;
+index          = "[" expr "]" ;
+primary        = literal | name | "(" expr ")" | call | member-chain | "{" [ expr { "," expr } [","] ] "}" ;
+call           = name "(" [ args ] ")" | name "." name "(" [ args ] ")" | member-chain "(" [ args ] ")" ;
+member-chain   = name ( "." | "->" ) name { ( "." | "->" ) name } ;
+args           = expr { "," expr } ;
+literal        = integer | float | char | string { string } | "L" string ;
+@end
+
+@section{gram-lexical} Lexical Elements
+@code text nocheck
+name           = letter { letter | digit | "_" } ;          letter = "A".."Z" | "a".."z" | "_" ;
+integer        = digits [ suffix ] | "0x" hex-digits [ suffix ] | "0b" bin-digits ;
+suffix         = up to three of "u" "U" "l" "L" ;
+float          = digits "." digits ;
+char           = "'" ( character | escape ) "'" ;
+string         = "\"" { character | escape } "\"" | "\"\"\"" { any } "\"\"\"" ;
+escape         = "\n" | "\r" | "\t" | "\0" | "\a" | "\b" | "\f" | "\v" | "\\" | "\'" | "\""
+               | "\x" hex hex | "\" octal [ octal [ octal ] ] | "\u" hex{4} | "\U" hex{8} ;
+comment        = "//" { any } end-of-line | "/*" { any } "*/" ;
+@end

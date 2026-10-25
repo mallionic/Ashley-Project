@@ -1,0 +1,49 @@
+@appendix{app-limits} Known Limitations of ashc 1.0
+@index limitations; errata
+The following behaviors of `ashc` 1.0.0 were observed while this manual was produced. Each is described where it matters in the body of the manual, with a workaround; this appendix collects them in one place. They are expected to change in future versions.
+
+@section{lim-language} Language
+@table widths=36,64 title="Language limitations" label=tab-lim-lang
+Limitation | Workaround
+Comparisons and `&&`, `||`, `!` cannot be used as values. | Use them in conditions: `int64 r = 0; if (a < b) { r = 1; }`.
+No `do ... while`, `goto`, `?:`, comma operator, `sizeof`. | `loop` with `break`; `terminate`; `if` / `else`; define sizes as constants.
+Locals are visible from their declaration to the end of the function, not of the block. | Use distinct names.
+Redeclaring a local with the same name and type re-initializes it silently. | Use distinct names.
+Pointer arithmetic is in bytes (`p + 1` is the next byte); indexing `p[i]` scales. | Prefer indexing.
+A cast to a narrower type does not truncate inside an expression. | Mask (`x & 0xFF`) or assign to a narrow variable.
+Floating-point literals and arithmetic are not supported; `printf("%f")` cannot receive ASH doubles. | Use `<math>` fixed point.
+Strings: `+` does not concatenate, writing to a literal crashes, `#s` is meaningless. | `uint8[N]` buffers with `strcpy` / `strcat`.
+Local `char[] c = "..."` has no length header. | Use a `uint8[N]` buffer, or a global `char[]`.
+Parameters written `T v[]` are untyped byte pointers. | Write `T* v`.
+Variadic ASH functions accept at most 8 extra arguments. | Pass an array.
+Arrays and structures declared in a function are never freed. | Allocate once and reuse.
+Structures cannot contain array fields or be passed by value. | Use separate fields or pointers.
+@end
+
+@section{lim-codegen} Code Generation
+@table widths=36,64 title="Code generation issues" label=tab-lim-cg
+Issue | Workaround
+Binary literals (`0b...`) inside functions fail in the ASHIR stage. | Use hexadecimal.
+Negative constants whose magnitude exceeds 2^31-1 are computed incorrectly. | Hexadecimal two's complement, or subtract a variable.
+`>>` by a variable amount is always arithmetic, even for unsigned values. | Mask the result or shift by a constant.
+The signedness of a parameter can be taken from a parameter with the same name in an earlier function (this affects `int_to_str` in `<string>`). | Give parameters distinct names in functions with different signedness.
+`continue` inside a `switch` inside a loop loops forever. | Set a flag and test it after the `switch`.
+Reading and then writing `*p` through a pointer parameter fails to compile. | Use `p[0]` or a local copy of the pointer.
+Storing a `uint8` parameter into a `uint8` structure field causes an internal error. | Declare the parameter `int64`.
+An `asm` block that `shasm` cannot assemble is dropped without an error. | Check assembly with stand-alone `shasm`.
+With `--no-libc`, `exit()` is defined only if the program uses the runtime (arrays, strings). | Use `sys_exit` from `<syscalls>`.
+Global arrays read in 16-bit flat binaries crash. | Use local arrays in 16-bit code.
+A function with a result type whose body ends without any `return` crashes when called. | Always end such functions with `return value;` (or use `unreturnable` and `return;`).
+Windows: variadic floating-point arguments; `rdi` / `rsi` not preserved. | End programs with `ExitProcess`.
+@end
+
+@section{lim-libs} Libraries and Tools
+@table widths=36,64 title="Library and tool issues" label=tab-lim-libs
+Issue | Workaround
+`<stdlib>` calls `__stlib_*` functions that do not exist and cannot be linked. | Call the C functions directly ([[ex-stdlib-direct]]).
+`import <null>;` fails because of the library's own `null` macro. | `define NULL 0;`
+`<types>`: the values cannot be converted to integers. | Use them only as `double` values passed to C.
+`shasm` 1.2.0 has no encodings for `bt*`, `xadd`, `cmpxchg`, `bswap`, `shld`/`shrd`, `lzcnt`/`tzcnt`, `enter`, `rdrand`, `lar`/`lsl` and a few others ([[app-insn]]). | Encode them with `emit`.
+ELF objects contain host information (user name, home directory, source path). | `objcopy --strip-unneeded --remove-section=.comment`.
+Some diagnostics, the `--debug` output and `logs/build.log` are in Spanish. | This manual gives English translations of the messages it shows.
+@end

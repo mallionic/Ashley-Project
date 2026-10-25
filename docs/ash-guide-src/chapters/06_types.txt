@@ -1,0 +1,364 @@
+@chapter{ch-types} Types
+@index types
+ASH is statically typed: every variable, parameter, return value and global has a type fixed at compile time. Types decide how much memory a value occupies, which instructions are used to load, store, extend and compare it, and how it is passed to other functions. This chapter describes every type of ASH 1.0 and shows how each one is represented in ASHIR and in machine code.
+
+@section{type-overview} Overview
+@table widths=24,76 title="Categories of types" label=tab-type-cats
+Category | Types
+Integers | Signed and unsigned integers of 8, 16, 32 and 64 bits, under ASH names (`int32`, `uint8` ...), x86 names (`byte`, `dword` ...), C names (`int`, `unsigned long` ...) and `<stdint.h>` names (`uint32_t` ...).
+Boolean | `bool`, an 8-bit integer with the constants `true` (1) and `false` (0).
+Character | `char`, an 8-bit integer holding a character code.
+Strings | `string`, a pointer to a NUL-terminated sequence of bytes; `char[]`, an array of characters.
+Pointers | `T*` for any type `T`, `void*`, and the untyped `ptr`.
+Arrays | `T[N]`, `T[]`, `T[R][C]` and `matrix`: heap blocks that carry their length ([[ch-arrays]]).
+Structures | `struct` and `typedef struct` types with C layout ([[ch-structs]]).
+Floating point | `float` / `float32` and `double` / `float64`: reserved, with limited support in 1.0 ([[type-float]]).
+Void | `void`: the return type of functions that return nothing.
+@end
+
+@section{type-int} Integer Types
+@index integer types; int64; uint8
+Every integer type of ASH is one of eight *machine types*: signed or unsigned, of 8, 16, 32 or 64 bits. Many names are accepted for each one so that code ported from C, from x86 assembly or from other languages can keep its spelling.
+
+@table widths=14,9,9,68 title="Integer types and their aliases" label=tab-int-types
+Machine type | Bits | Signed | Names accepted
+`int8` | 8 | yes | `int8`, `int8_t`, `schar`, `signed char`
+`uint8` | 8 | no | `uint8`, `uint8_t`, `byte`, `uchar`, `unsigned char`, `char`, `bool`
+`int16` | 16 | yes | `int16`, `int16_t`, `short`, `short int`, `signed short`
+`uint16` | 16 | no | `uint16`, `uint16_t`, `word`, `ushort`, `unsigned short`
+`int32` | 32 | yes | `int32`, `int32_t`, `int`, `signed`, `signed int`
+`uint32` | 32 | no | `uint32`, `uint32_t`, `dword`, `uint`, `unsigned`, `unsigned int`
+`int64` | 64 | yes | `int64`, `int64_t`, `long`, `long long`, `llong`, `intptr_t`, `ssize_t`, `ptrdiff_t`
+`uint64` | 64 | no | `uint64`, `uint64_t`, `qword`, `ulong`, `ullong`, `unsigned long`, `unsigned long long`, `size_t`, `uintptr_t`
+@end
+
+The range of each type is the usual two's complement range:
+
+@table widths=16,42,42 title="Ranges of the integer types" label=tab-int-ranges
+Type | Minimum | Maximum
+`int8` | -128 | 127
+`uint8` | 0 | 255
+`int16` | -32 768 | 32 767
+`uint16` | 0 | 65 535
+`int32` | -2 147 483 648 | 2 147 483 647
+`uint32` | 0 | 4 294 967 295
+`int64` | -9 223 372 036 854 775 808 | 9 223 372 036 854 775 807
+`uint64` | 0 | 18 446 744 073 709 551 615
+@end
+
+@subsection{type-int-ashir} Integers in ASHIR
+In ASHIR every integer variable is declared with `.type name class`, where *class* is `byte`, `word`, `dword` or `qword` for unsigned and plain values, and `int8`, `int16` or `int32` for the narrow signed types. Only the narrow signed types keep their sign in ASHIR, because they are the only ones whose extension to a wider register depends on the sign. A signed 64-bit value needs no extension, so `int64` is simply `qword`.
+
+@example ir show=src,ir title="How integer types appear in ASHIR"
+@Entry
+pub func main(): int64 {
+    int8   a = -1;
+    uint8  b = 200;
+    int16  c = -300;
+    uint16 d = 60000;
+    int32  e = -70000;
+    uint32 f = 4000000000;
+    int64  g = -5;
+    uint64 h = 5;
+    return 0;
+}
+@end
+
+@subsection{type-ext} Widening: sign and zero extension
+@index sign extension; zero extension; movsx; movzx
+When a narrow value is used in a wider context (assigned to a wider variable, used in arithmetic, passed as an argument), it is *extended* to the wider size. Unsigned types are **zero-extended** (the new high bits are 0) and signed types are **sign-extended** (the new high bits copy the sign bit), exactly as in C. On x86-64 the compiler uses `movzx` for zero extension, `movsx` for 8-bit and 16-bit signed values and `movsxd` for 32-bit signed values.
+
+@example run asm=main title="Sign extension versus zero extension" label=ex-extension
+@Entry
+pub func main(): int64 {
+    int8   s = -2;
+    uint8  u = 254;          // same bit pattern as s: 0xFE
+    int64  ws = s;           // sign-extended: -2
+    int64  wu = u;           // zero-extended: 254
+    int32  m = -7;
+    int64  wm = m;           // movsxd: -7
+    printf("%d %d %d\n", ws, wu, wm);
+    return 0;
+}
+@end
+
+In the disassembly, look for `movsx` and `movsxd` where the signed variables are widened; unsigned variables are kept zero-extended in their registers, so a plain `mov` suffices for them.
+
+@subsection{type-narrow} Narrowing: truncation on store
+@index truncation; overflow
+When a value is stored into a narrower variable, only its low bits are kept. Arithmetic on integers wraps around modulo 2^N, where N is the width of the variable that receives the result; there is no overflow trap.
+
+@example run title="Wrap-around and truncation" label=ex-wrap
+@Entry
+pub func main(): int64 {
+    uint8  a = 250;
+    a = a + 10;                  // 260 mod 256 = 4
+    int8   b = 127;
+    b = b + 1;                   // wraps to -128
+    uint16 c = 65535;
+    c = c + 1;                   // 0
+    int16  d = -32768;
+    d = d - 1;                   // 32767
+    uint32 e = 4294967295;
+    e = e + 1;                   // 0
+    int64  big = 300;
+    uint8  low = big;            // low 8 bits of 300 = 44
+    printf("%d %d %d %d %u %d\n", a, b, c, d, e, low);
+    return 0;
+}
+@end
+
+@subsection{type-literals} The type of a literal
+@index literal type
+An integer literal has no fixed type. Its value is checked against the type of the variable that receives it: a literal that cannot be represented is a compile-time error, even without strict mode. Both signed and unsigned interpretations are accepted for a given width, so `uint8 x = -1` is rejected only in strict mode, while `uint8 x = 300` is always rejected.
+
+@example fail title="A literal that does not fit" translate="error: the value 300 does not fit in 8 bits (allowed range: -128..255)\n1 error generated."
+@Entry
+pub func main(): int64 {
+    uint8 x = 300;
+    return x;
+}
+@end
+
+@subsection{type-signed-ops} Operations that depend on signedness
+Addition, subtraction, multiplication (low half), bitwise operations and left shifts produce the same bits for signed and unsigned operands. Four operations do depend on the sign, and ASH chooses the instruction from the types of the operands:
+
+@table widths=22,39,39 title="Signed and unsigned instructions" label=tab-signed-ops
+Operation | Signed operands | Unsigned operands
+Division `/` and `%` | `idiv` (truncates toward zero) | `div`
+Right shift `>>` | `sar` (copies the sign bit) | `shr` (shifts in zeros)
+Comparisons `<` `<=` `>` `>=` | `jl` `jle` `jg` `jge` | `jb` `jbe` `ja` `jae`
+Widening | `movsx` / `movsxd` | `movzx` / `mov`
+@end
+
+@example run title="Signed and unsigned division and shifts" label=ex-signed-ops
+@Entry
+pub func main(): int64 {
+    int64  sd = -7 / 2;                       // -3 (truncation toward zero)
+    int64  sm = -7 % 2;                       // -1 (sign of the dividend)
+    uint64 ud = 0xFFFFFFFFFFFFFFFF / 2;       // unsigned: 9223372036854775807
+    int64  sr = -16 >> 2;                     // arithmetic shift: -4
+    uint64 ur = 0x8000000000000000 >> 4;      // logical shift: 0x0800000000000000
+    printf("%d %d %llu %d %llx\n", sd, sm, ud, sr, ur);
+    return 0;
+}
+@end
+
+@section{type-bits} Integer Width and the Target
+@index @bits; target width
+The widths in [[tab-int-types]] are those of the 64-bit target. On narrower targets the *machine word* limits the width of every integer:
+
+@table widths=24,76 title="Effective integer widths per target" label=tab-width-target
+Target | Effective widths
+64-bit (default) | 8, 16, 32 and 64 bits as declared.
+32-bit (`@bits(32)`) | 8, 16 and 32 bits as declared; `int64`, `uint64` and their aliases are held in 32 bits.
+16-bit (`@bits(16)`) | 8 and 16 bits as declared; every wider type is held in 16 bits.
+@end
+
+The following 16-bit program, executed in the emulator, shows that `int32` and `int64` behave as 16-bit values on that target: `70000` becomes `70000 mod 65536 = 4464`, and `65535 + 1` becomes 0.
+
+@example bits=16 org=0x100 run title="Integer width on the 16-bit target" label=ex-width16
+@bits(16)
+@originoffs(0x100)
+
+@Entry
+pub func _start(): int32 {
+    int32 x = 70000;           // stored in 16 bits: 4464
+    int64 y = 65535;
+    y = y + 1;                 // 0
+    return x + y;              // AX = 4464
+}
+@end
+
+@tip
+Code meant to be portable across targets should use the narrowest type that is wide enough for its values (`int16` for values that always fit in 16 bits, and so on) and test `ASH_BITS` with `%if` where a wider type is essential ([[ch-pp]]).
+@end
+
+@section{type-bool} Boolean
+@index bool; true; false
+`bool` is an unsigned 8-bit integer. The words `true` and `false` are predefined constants with the values 1 and 0. They are predefined with override right -1 ([[mod-override]]), which means that a program or library may define its own `true` and `false` and its definitions win. The library `<stdbool>` also defines `TRUE` and `FALSE`.
+
+Conditions in `if`, `while` and `for` do not require a `bool`: any integer expression can be compared explicitly (`if (flags != 0)`). A `bool` variable holds whatever value is stored into it; ASH does not normalize non-zero values to 1.
+
+@example run title="Booleans"
+"use strict";
+
+func is_even(int64 n): bool {
+    if ((n & 1) == 0) { return true; }
+    return false;
+}
+
+@Entry
+pub func main(): int64 {
+    bool a = true;
+    bool b = false;
+    printf("a=%d b=%d is_even(4)=%d is_even(7)=%d\n", a, b, is_even(4), is_even(7));
+    return 0;
+}
+@end
+
+@section{type-char} Characters
+@index char
+`char` is an 8-bit unsigned integer that by convention holds a character code. A character literal such as `'A'` is an integer and can be assigned to any integer type. `char[]` declares an array of characters, which is the mutable counterpart of `string` ([[arr-chararray]]).
+
+@example run title="Characters are small integers"
+@Entry
+pub func main(): int64 {
+    char c = 'A';
+    c = c + 2;                         // 'C'
+    int64 code = c;
+    char high = 200;                   // char is unsigned: 200, not -56
+    int64 h = high;
+    printf("%c %d %d\n", c, code, h);
+    return 0;
+}
+@end
+
+@section{type-string} Strings
+@index string type
+A value of type `string` is the address of a sequence of bytes that ends with a NUL (0) byte, which is exactly what C calls `char*` (or `const char*`). String literals are stored in the read-only data of the program; assigning a literal to a `string` variable copies only the address.
+
+@table widths=34,66 title="Operations on string values" label=tab-string-ops
+Operation | Meaning
+`string s = "text";` | `s` holds the address of the literal.
+`s = "other";` | `s` now holds the address of another literal.
+`s[i]` | Reads the byte at index `i` (no bounds check: a `string` has no length header).
+`printf("%s", s)` | Passes the address to C.
+`f(s)` | Passes the address to an ASH function with a `string`, `uint8*` or `ptr` parameter.
+@end
+
+@example run title="String values are addresses"
+@Entry
+pub func main(): int64 {
+    string s = "Hello";
+    printf("%s, first=%c second=%c\n", s, s[0], s[1]);
+    s = "World";
+    printf("%s\n", s);
+    return 0;
+}
+@end
+
+@warning
+A string literal lives in read-only memory: writing through a `string` that points to a literal (`s[0] = 'J'`) crashes the program with a segmentation fault. Modify text in a `char[]` or `uint8[N]` buffer instead. The `+` operator does not concatenate strings at run time; use adjacent literals for constant text and `strcpy` / `strcat` from `<string>` for run-time text ([[nlib-string]]). The length operator `#` is meaningful on arrays, not on `string` values; use `strlen`.
+@end
+
+@section{type-ptr} Pointers
+@index pointer; void*; ptr
+A pointer type is written by appending `*` to a type: `int64*`, `uint8*`, `Persona*`, `void*`. The untyped `ptr` is equivalent to an address-sized unsigned integer. Pointers are 64 bits wide on the 64-bit target, 32 bits on the 32-bit target and 16 bits on the 16-bit target.
+
+@table widths=26,74 title="Pointer operations" label=tab-ptr-ops
+Operation | Meaning
+`&x` | Address of a variable, array element block, global or function.
+`*p` | The value at address `p`, read with the width of the pointed type.
+`*p = v;` | Store `v` at address `p` with the width of the pointed type.
+`p[i]` | The element `i` of type `T` at address `p + i * sizeof(T)`.
+`p + n`, `p - n` | Address arithmetic **in bytes**: `p + 8` is the next `int64` after `p`.
+`q - p` | Difference of two addresses in bytes.
+`(T*)p` | Reinterpret an address as a pointer to `T`.
+@end
+
+@important
+Unlike C, adding an integer to a pointer does **not** scale by the size of the pointed type. `p + 1` is the address of the next *byte*. Indexing with `p[i]` does scale. Prefer indexing; when you need explicit address arithmetic, multiply by the element size yourself.
+@end
+
+@example run title="Pointer arithmetic is in bytes, indexing is in elements" label=ex-ptr-arith
+@Entry
+pub func main(): int64 {
+    int64[4] v;
+    v[0] = 10; v[1] = 20; v[2] = 30; v[3] = 40;
+    int64* p = &v;
+    int64* q = p + 8;            // 8 bytes later: element 1
+    int64 dist = q - p;          // 8
+    int64 a = *q;                // 20
+    int64 b = p[2];              // 30: indexing scales by 8
+    int64 c = *(p + 24);         // 40
+    uint8* bytes = &v;
+    int64 d = bytes[16];         // low byte of v[2]: 30
+    printf("%d %d %d %d %d\n", dist, a, b, c, d);
+    return 0;
+}
+@end
+
+@subsection{type-funcptr} Function pointers
+@index function pointer; callback
+The address of a function, written `&f` or simply `f` where a value is expected, is a pointer that can be passed to C (for callbacks such as `qsort` or `atexit`), stored in a variable of type `int64`, `uint64`, `ptr` or `void*`, and called through a member chain such as `table->handler(args)`. In ASHIR the address of a function is taken with the `faddr` operation. [[fn-pointers]] describes function pointers in detail.
+
+@section{type-float} Floating-Point Types
+@index float; double; IEEE-754
+The names `float` / `float32` and `double` / `float64` are reserved for IEEE-754 single and double precision values, and the ASHIR format has the classes `float32` and `float64`. In ASH 1.0 their support is limited:
+
+- A 64-bit hexadecimal literal assigned to a `double` is stored as an IEEE-754 *bit pattern*: `double one_and_half = 0x3FF8000000000000;` stores 1.5. The `<types>` library uses this to provide `inf()`, `nan()` and related constants.
+- Decimal literals such as `1.5` are rejected inside functions ("the literal is floating point"), and arithmetic between `double` values is not supported by the 1.0 back end.
+- `printf("%f", ...)` cannot be used with ASH `double` values, because variadic floating-point arguments are not passed in `xmm` registers.
+
+For numeric work without an FPU, `<math>` provides Q16.16 fixed-point arithmetic, including square root, sine, cosine and tangent ([[nlib-math]]).
+
+@section{type-void} Void
+`void` is the return type of a function that returns no value. In such functions `return;` (or reaching the closing brace) leaves the function. `void*` is a pointer to memory of unspecified type, compatible with every other pointer.
+
+@section{type-cast} Casts
+@index cast
+A cast is written `(T)expr` where `T` is a type name, optionally followed by `*`. Casts are used:
+
+- to reinterpret an address: `*(int64*)a` reads an `int64` from the address held in `a` (common in `qsort` comparison functions);
+- to make a narrowing assignment explicit, which strict mode requires ([[ch-strict]]): `uint32 low = (uint32)(big & 0xFFFFFFFF);`
+- to request sign extension of a value: `(int32)0xFFFFFFFF` is -1 when widened.
+
+@important
+In ASH 1.0 a cast to a narrower integer type does not truncate the value inside an expression: `(uint8)300` is still 300 when it is used as a 64-bit value. Truncation happens when the value is *stored* into a narrower variable, or explicitly with a mask: `x & 0xFF`.
+@end
+
+@example run title="Casts" label=ex-casts
+func compare(int64 a, int64 b): int64 {
+    int64 x = *(int64*)a;          // reinterpret the address as int64*
+    int64 y = *(int64*)b;
+    return x - y;
+}
+
+@Entry
+pub func main(): int64 {
+    int64 a = 5;
+    int64 b = 9;
+    int64 r = compare(&a, &b);
+    int64 s = (int32)0xFFFFFFFF;   // sign-extended: -1
+    int64 big = 300;
+    int64 masked = big & 0xFF;     // explicit truncation: 44
+    printf("%d %d %d\n", r, s, masked);
+    return 0;
+}
+@end
+
+@section{type-typedef} Type Aliases
+@index typedef
+`typedef` *type* *name*`;` introduces a new name for an existing type. Aliases are replaced at the token level before parsing, so they are completely equivalent to the original type. Aliases of aliases are resolved, and aliases declared in an imported file are visible in the file that imports it.
+
+@example run title="Type aliases" label=ex-typedef
+typedef uint32 u32;
+typedef int64 word_t;
+typedef uint8* bytes;
+
+func sum(word_t a, word_t b): word_t {
+    return a + b;
+}
+
+@Entry
+pub func main(): int64 {
+    u32 small = 7;
+    word_t total = sum(small, 35);
+    bytes text = "typedef";
+    printf("%d %c\n", total, text[0]);
+    return 0;
+}
+@end
+
+@section{type-sizes} Sizes and Alignment
+@table widths=30,14,14,42 title="Size and natural alignment on the 64-bit target" label=tab-sizes
+Type | Size | Alignment | Notes
+`int8`, `uint8`, `bool`, `char` | 1 | 1 |
+`int16`, `uint16` | 2 | 2 |
+`int32`, `uint32` | 4 | 4 |
+`int64`, `uint64` | 8 | 8 |
+Pointers, `string`, `ptr` | 8 | 8 | 4 and 2 bytes on the 32-bit and 16-bit targets.
+Arrays (variable) | 8 | 8 | The variable holds a pointer to a heap block ([[arr-layout]]).
+`struct` | sum of fields + padding | largest field | C layout ([[st-layout]]).
+@end

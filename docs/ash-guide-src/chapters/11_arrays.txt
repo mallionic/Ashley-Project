@@ -1,0 +1,260 @@
+@chapter{ch-arrays} Arrays, Strings and Matrices
+@index arrays
+Arrays in ASH are blocks of elements of one type that know their own length. This chapter describes how arrays are declared and initialized, how they are laid out in memory, how indexing and bounds checking work, how two-dimensional arrays and matrices are built, and how text is stored in arrays and buffers.
+
+@section{arr-decl} Declaring Arrays
+@table widths=38,62 title="Array declaration forms" label=tab-array-decl
+Form | Meaning
+`int64[] v = {1, 2, 3};` | An array whose length is the number of initializers.
+`int64[8] buf;` | An array of 8 elements, all zero.
+`int64 buf[8];` | The same, in C syntax.
+`int64[3][4] grid;` | A two-dimensional array of 3 rows and 4 columns, all zero.
+`string[] names = {"Ana", "Luis"};` | An array of string addresses.
+`matrix m[] []{ ... }` | A matrix written row by row ([[arr-matrix]]).
+`matrix uint64 z[3][4];` | A zero-filled matrix.
+@end
+
+The size of an array may be any expression whose value is known when the declaration executes; it does not need to be a constant. The initializer list may end with a trailing comma.
+
+@example run title="Array declarations" label=ex-array-decl
+@Entry
+pub func main(): int64 {
+    int64[] primes = {2, 3, 5, 7, 11, 13,};
+    int64 n = 5;
+    int64[n] squares;                     // size computed at run time
+    for (int64 i = 0; i < n; i++) {
+        squares[i] = i * i;
+    }
+    uint8 bytes[4];
+    bytes[2] = 0xAB;
+    printf("primes=%d squares[4]=%d bytes[2]=%x lengths: %d %d %d\n",
+        #primes, squares[4], bytes[2], #primes, #squares, #bytes);
+    return 0;
+}
+@end
+
+@section{arr-layout} Memory Layout
+@index array layout; heap
+An array variable holds the **address of its first element**. The elements are stored in a heap block obtained from the runtime helper `__ash_alloc`, which allocates the block with `calloc` (so the elements start at zero) and prefixes it with a 16-byte header:
+
+@code text nocheck
+ block address        variable value (address of element 0)
+      |                      |
+      v                      v
+      +----------+----------+----------+----------+-----+----------+
+      |  length  | capacity | elem 0   | elem 1   | ... | elem n-1 |
+      +----------+----------+----------+----------+-----+----------+
+       8 bytes    8 bytes    element size each
+@end
+
+Because the variable points at the elements, an array can be passed directly to C functions that expect a pointer (`qsort(&v, ...)`, `write(fd, &buf, n)`), and pointer arithmetic on it addresses the elements. The length is stored 16 bytes before the first element and the capacity 8 bytes before it; `#v` reads the length.
+
+@example run ir=main show=src,out,ir title="Inspecting the header of an array" label=ex-array-header
+@Entry
+pub func main(): int64 {
+    int64[] v = {10, 20, 30, 40};
+    uint64* raw = &v;
+    printf("length=%d capacity=%d first=%d\n", raw[-2], raw[-1], raw[0]);
+    return 0;
+}
+@end
+
+The ASHIR shows the allocation `call[__ash_alloc, 4, 8, 0]` (four elements of eight bytes, no extra bytes) followed by one `store` per initializer at offsets 0, 8, 16 and 24.
+
+@important
+Arrays declared in a function are **not freed** when the function returns: the block remains allocated until the program ends. A function that declares an array and is called many times allocates a new block on every call. For long-running loops, declare work arrays once in the caller and pass them as pointers, or use a global array.
+@end
+
+@section{arr-index} Indexing
+@index indexing
+`v[i]` designates element *i* of `v`, counting from 0. The element address is computed as `v + i * size`, where *size* is the element size (1, 2, 4 or 8). Loads and stores use the width of the element type, and narrow elements are extended on load according to their signedness ([[type-ext]]).
+
+@example asm=main show=src,asm asmlines=48 title="Machine code for an indexed store and load" label=ex-index-asm
+@beautycode(false)
+
+@Entry
+pub func main(): int64 {
+    int32[4] v;
+    int64 i = 2;
+    v[i] = 7;
+    return v[i];
+}
+@end
+
+@subsection{arr-bounds} Bounds checking
+@index bounds checking; __ash_bounds
+By default every access to an array element is checked: before computing the address, the code calls `__ash_bounds(v, i)`, which reads the length from the header and **terminates the program with exit status 134** if `i` is not smaller than the length. Out-of-range accesses therefore stop the program instead of silently corrupting memory.
+
+@example run expect=134 title="An out-of-range index stops the program" label=ex-bounds
+func fill(int64 n): int64 {
+    int64[8] v;
+    int64 total = 0;
+    for (int64 i = 0; i < n; i++) {
+        v[i] = i * 3;
+        total = total + v[i];
+    }
+    return total;
+}
+
+@Entry
+pub func main(): int64 {
+    printf("n=8 -> %d\n", fill(8));
+    fflush(0);
+    printf("n=9 -> %d\n", fill(9));     // index 8 is out of range
+    return 0;
+}
+@end
+
+Bounds checks apply to arrays (which have a header). Accesses through raw pointers (`uint8* p; p[i]`) and through `string` values are never checked, because they have no length. Bounds checking is controlled with `@bounds(true|false)` and `@beautycode(true|false)` ([[ann-beautycode]]); turning it off removes one call per access and makes the code smaller and faster.
+
+@section{arr-length} The Length Operator #
+@index #; length
+`#v` is the number of elements of the array `v`. For a two-dimensional array or a matrix it is the number of rows. The built-in functions `len(v)` and `length(v)` are synonyms of `#v`; `rows(m)`, `cols(m)` and `count(m)` give the number of rows, columns and elements of a matrix. These built-ins are only used when the program does not define functions with the same names.
+
+`#` reads the header of the array at run time, so it also works on an array received through a pointer parameter:
+
+@example run title="Length of an array passed to a function" label=ex-length-param
+func sum(int64* v): int64 {
+    int64 s = 0;
+    for (int64 i = 0; i < #v; i++) {
+        s = s + v[i];
+    }
+    return s;
+}
+
+@Entry
+pub func main(): int64 {
+    int64[] data = {4, 8, 15, 16, 23, 42};
+    printf("count=%d sum=%d\n", len(data), sum(data));
+    return 0;
+}
+@end
+
+@section{arr-params} Arrays as Parameters
+An array is passed to a function as the address of its first element. Declare the parameter as a pointer to the element type (`int64* v`, `uint8* buf`); indexing then scales by the element size and `#v` reads the length from the header.
+
+@warning
+A parameter written in C array syntax, `int64 v[]`, is accepted but becomes an untyped address in `ashc` 1.0: indexing it addresses *bytes*, not `int64` elements. Write `int64* v`.
+@end
+
+@section{arr-2d} Two-Dimensional Arrays
+@index two-dimensional array
+`T[R][C] name;` declares an array of *R* rows of *C* elements. It is built by the helper `__ash_matrix(R, C, size)` as an array of *R* row addresses, each pointing to its own array of *C* elements. `m[i][j]` first loads the address of row *i*, then indexes into it; both steps are bounds-checked. `#m` is *R*, and `#m[i]` is *C*.
+
+@example run title="A two-dimensional array" label=ex-2d
+@Entry
+pub func main(): int64 {
+    int64[3][3] m;
+    for (int64 i = 0; i < 3; i++) {
+        for (int64 j = 0; j < 3; j++) {
+            m[i][j] = i * 3 + j;
+        }
+    }
+    printf("m[2][1]=%d rows=%d\n", m[2][1], #m);
+    for (int64 i = 0; i < 3; i++) {
+        printf("%d %d %d\n", m[i][0], m[i][1], m[i][2]);
+    }
+    return 0;
+}
+@end
+
+@section{arr-matrix} Matrices
+@index matrix
+The `matrix` statement declares a two-dimensional array of integers in a tabular form. Each element is written `[type value]`; **each source line is one row**, and every row must have the same number of elements. The element type of the matrix is the widest type that appears.
+
+@code text nocheck
+matrix name[] []{
+    [type v], [type v], ...,        // row 0
+    [type v], [type v], ...,        // row 1
+}
+matrix type name[rows][cols];       // zero-filled
+@end
+
+@example run title="A matrix literal and its dimensions" label=ex-matrix
+@Entry
+pub func main(): int64 {
+    matrix m[] []{
+        [uint64 64324], [uint64 64231], [uint64 6445],
+        [uint64 64324], [uint64 64234], [uint64 6454],
+    }
+    matrix uint32 z[2][5];
+    z[1][4] = 9;
+    printf("rows=%d cols=%d count=%d m[1][2]=%llu\n", rows(m), cols(m), count(m), m[1][2]);
+    printf("z: %dx%d z[1][4]=%d\n", rows(z), cols(z), z[1][4]);
+    return 0;
+}
+@end
+
+@example fail title="Rows of different length" translate="<input>:7:5: error: matrix 'm': row 2 (line 5) has 1 elements and the first one has 2\n    7 | return\n      |     ^^^^^^\n1 error generated."
+@Entry
+pub func main(): int64 {
+    matrix m[] []{
+        [int32 1], [int32 2],
+        [int32 3],
+    }
+    return 0;
+}
+@end
+
+@section{arr-strings} Text in Arrays and Buffers
+@index string array; buffer
+ASH offers several ways to hold text. Choose according to whether the text is constant and whether its length is known:
+
+@table widths=30,70 title="Ways to store text" label=tab-text-storage
+Declaration | Use
+`string s = "literal";` | Constant text. `s` points into read-only data; do not modify it.
+`string[] list = {"a", "b"};` | An array of addresses of constant strings; `#list` is the number of strings.
+`uint8[N] buf;` | A modifiable, zero-filled buffer of *N* bytes. Pass `&buf` to `strcpy`, `strcat`, `snprintf`, `read` ... The buffer is bounds-checked when indexed as `buf[i]`.
+`general char[] text = """..."""` | A global, modifiable array of characters initialized with text, with a length header ([[var-global-arrays]]).
+@end
+
+@example run title="Building text in a buffer with <string>" label=ex-buffer
+import <string>;
+
+@Entry
+pub func main(): int64 {
+    uint8[64] buf;
+    strcpy(&buf, "Hello");
+    strcat(&buf, ", ");
+    strcat(&buf, "ASH");
+    str_upper(&buf);
+    printf("%s (%d bytes)\n", &buf, strlen(&buf));
+    buf[0] = 'J';                         // a buffer may be modified
+    printf("%s\n", &buf);
+    return 0;
+}
+@end
+
+@example run title="Arrays of strings" label=ex-string-array
+@Entry
+pub func main(): int64 {
+    string[] days = {"Mon", "Tue", "Wed", "Thu", "Fri"};
+    for (int64 i = 0; i < #days; i++) {
+        printf("%d:%s ", i, days[i]);
+    }
+    printf("\n");
+    return 0;
+}
+@end
+
+@subsection{arr-chararray} char arrays
+@index char[]
+A *global* `char[]` initialized with a string literal is a modifiable copy of the text with a length header: `#text` is the number of characters and `text[i]` is bounds-checked.
+
+@warning
+In `ashc` 1.0 a *local* `char[]` initialized with a literal (`char[] c = "abc";`) points at the literal itself, without a header: `#c` returns garbage and writing `c[i]` stops the program in the bounds check. Inside functions, use a `uint8[N]` buffer and `strcpy` instead.
+@end
+
+@section{arr-global} Global and Runnable Arrays
+Global arrays with initializers, zero-filled global arrays and `runnable` arrays are described in [[var-global-arrays]] and [[var-runnable]]. They have the same header as local arrays, so everything in this chapter applies to them; the difference is that their storage is part of the object file instead of the heap.
+
+@section{arr-cost} Cost Model
+@table widths=36,64 title="What array operations cost" label=tab-array-cost
+Operation | Cost
+Declaration of an array of *n* elements | One call to `__ash_alloc` (one `calloc`), plus one store per initializer.
+`v[i]` with bounds checking | One call to `__ash_bounds`, an address computation and a load or store.
+`v[i]` without bounds checking | An address computation and a load or store.
+`m[i][j]` | Two of the above (row address, then element).
+`#v` | One load from the header.
+Leaving the function | Nothing: the block is not freed.
+@end

@@ -1,0 +1,5 @@
+@chapter{ch-dict} Language Dictionary
+@index dictionary
+This chapter lists every word and symbol of the ASH language in one place, in the order a beginner is likely to look them up: first the symbols, then the words in alphabetical order. Each entry says what kind of element it is, shows how to write it, explains what it means in plain words, and gives a small complete program with its real output. Follow the *See also* links for the full rules.
+
+@gen dictionary x

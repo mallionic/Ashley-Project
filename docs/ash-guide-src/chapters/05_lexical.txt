@@ -1,0 +1,261 @@
+@chapter{ch-lex} Lexical Structure
+@index lexical structure; tokens
+This chapter describes how ASH source text is divided into tokens: the character set, white space, comments, identifiers, keywords, literals, operators and punctuation. It also describes the transformations that happen at the token level, before parsing, such as the folding of multi-word C type names and the expansion of compound assignments.
+
+@section{lex-source} Source Files
+An ASH program is stored in one or more text files with the extension `.ash`. Files are read as UTF-8. Identifiers, keywords and operators use ASCII characters only; other characters may appear inside comments, string literals and character literals.
+
+A file does not need any particular header. The first non-blank item of a file may be a `"use strict";` declaration ([[ch-strict]]), compile-time directives ([[ch-pp]]), imports, externs, globals, annotations, classes or functions, in any order.
+
+@section{lex-ws} White Space and Line Structure
+Spaces, tabs, carriage returns and line feeds separate tokens and are otherwise ignored. Line ends have no syntactic meaning, with three exceptions:
+
+- a compile-time directive (`%if`, `%define` ...) occupies exactly one line;
+- a `define` without a terminating `;` ends at the end of its line;
+- rows of a `matrix` literal are delimited by lines ([[arr-matrix]]).
+
+The line and column of every token are recorded and used in diagnostics.
+
+@subsection{lex-semicolon} Semicolons
+The semicolon terminates statements. The parser is tolerant: in most positions a missing semicolon at the end of a line is accepted, because each statement form is recognized by its first tokens. The following program compiles and runs:
+
+@example run title="Statements without semicolons"
+@Entry
+pub func main(): int64 {
+    int64 a = 5
+    int64 b = 6
+    printf("%d\n", a + b)
+    return 0
+}
+@end
+
+Global variable declarations are customarily written without a semicolon (`general static uint64 total = 0`). Inside functions this manual always writes the semicolon, which avoids surprises and keeps the code readable for C programmers.
+
+@section{lex-comments} Comments
+@index comments
+ASH has the two comment forms of C:
+
+- `//` starts a comment that extends to the end of the line.
+- `/*` starts a comment that extends to the next `*/`. Block comments do **not** nest: the first `*/` ends the comment.
+
+A comment is equivalent to white space. Comments are recognized everywhere except inside string and character literals. Documentation comments written as `/** ... */` are ordinary block comments; the VS Code extension highlights them differently.
+
+@code ash top
+/* A block comment
+   spanning several lines. */
+func area(int64 w, int64 h): int64 {     // a line comment
+    return w * h;                          /* also fine here */
+}
+@end
+
+@note
+Inside `asm { }` blocks the assembly comment character `;` also starts a comment, because the block is handed to the assembler unchanged ([[ch-asm]]).
+@end
+
+@section{lex-idents} Identifiers
+@index identifier
+An identifier is a sequence of letters (`A`–`Z`, `a`–`z`), digits (`0`–`9`) and underscores (`_`) that does not begin with a digit. Identifiers are case-sensitive: `total`, `Total` and `TOTAL` are three different names. There is no length limit.
+
+Names that begin with two underscores (`__tmp1`, `__ash_alloc`, `__g_counter`, `__arg_n`, `__crack_f_x`, `__ret_f`, `__va0`) are used by the compiler for generated temporaries, helpers and symbols. Do not declare names of this form in your programs.
+
+@table widths=30,70 title="Reserved name prefixes used by the compiler" label=tab-reserved-prefixes
+Prefix | Used for
+`__tmp`*N* | Temporaries created for sub-expressions.
+`__L`*N* | Labels created for control flow.
+`__str`*N*, `__wstr`*N* | String literals and wide string literals.
+`__g_`*name* | Symbols of `ungeneral` global variables.
+`__ash_` | Runtime helper functions (`__ash_alloc`, `__ash_bounds` ...).
+`__arg_`*name* | Original parameter when a parameter is modified ([[fn-params]]).
+`__crack_`*f*`_`*name* | Functions generated for cracks.
+`__ret_`*f* | Pending return value of `unreturnable`.
+`__vac`, `__va0`–`__va7` | Hidden parameters of variadic functions.
+`__rp`*N*, `__sw`*N* | Hidden counters of `repeat` and subjects of `switch`.
+@end
+
+@section{lex-keywords} Keywords
+@index keywords
+ASH keywords are *contextual*: the lexer produces identifiers, and the parser recognizes a keyword only where a keyword can appear. In practice this means that a few keywords can also be used as variable names when there is no ambiguity. For example, a variable may be called `terminate` or `ptr`:
+
+@example run title="Contextual keywords used as variable names"
+@Entry
+pub func main(): int64 {
+    int64 terminate = 1;       // a variable, not the statement
+    int64 ptr = 2;             // 'ptr' is also a type name
+    terminate = terminate + ptr;
+    printf("%d\n", terminate);
+    return 0;
+}
+@end
+
+Even so, using keywords as names makes programs harder to read. The following words should be treated as reserved:
+
+@table widths=24,76 title="Keywords of ASH" label=tab-keywords
+Group | Keywords
+Declarations | `func` `class` `struct` `typedef` `define` `redefine` `global` `extern` `import` `matrix` `runnable`
+Visibility and storage | `pub` `priv` `general` `ungeneral` `static` `const` `volatile`
+Control flow | `if` `elif` `else` `switch` `case` `default` `while` `for` `repeat` `loop` `break` `continue` `return` `terminate` `unreturnable` `unreturn`
+Low level | `asm` `__asm__` `emit` `emit8` `emit16` `emit32` `emit64` `ashley`
+Types | see [[tab-int-types]]: `int8` ... `uint64`, `byte` `word` `dword` `qword`, `char` `bool` `string` `ptr` `void` `float` `double`, the C names `int` `short` `long` `unsigned` `signed` `size_t` ...
+Constants | `true` `false` (predefined, see [[type-bool]]), `NULL` `null` `nil` (from `<null>` and `<stdlib>`)
+Built-in queries | `va_count` `va_arg` `len` `length` `rows` `cols` `count`
+@end
+
+@section{lex-literals} Literals
+@subsection{lex-int} Integer literals
+@index integer literal; hexadecimal; binary literal
+@table widths=22,30,48 title="Integer literal forms" label=tab-int-literals
+Form | Example | Notes
+Decimal | `0`, `42`, `18446744073709551615` | A sequence of digits. Values up to 2^64-1 are accepted; values above 2^63-1 are stored as their 64-bit unsigned bit pattern.
+Hexadecimal | `0xFF`, `0X7FFF`, `0xcafe` | `0x` or `0X` followed by hexadecimal digits (case-insensitive). No digit separators.
+Binary | `0b1011` | `0b` or `0B` followed by binary digits. See the caution below.
+Character | `'A'`, `'\n'` | The code of a single character (see [[lex-char]]).
+@end
+
+An integer literal may be followed by the C suffixes `u`, `U`, `l`, `L` in any combination of up to three letters (`U`, `L`, `UL`, `LL`, `ULL`, `llu` ...). The suffix is accepted for compatibility with C code and is ignored: the type of a literal is determined by the context in which it is used ([[type-literals]]).
+
+@example run title="Integer literals"
+@Entry
+pub func main(): int64 {
+    int64 dec = 255;
+    int64 hex = 0xFF;
+    int64 chr = 'A';
+    uint64 big = 18446744073709551615ULL;
+    int64 neg = -1234567;
+    printf("%d %d %d %llu %lld\n", dec, hex, chr, big, neg);
+    return 0;
+}
+@end
+
+A minus sign is not part of a literal: `-5` is the unary minus operator applied to the literal `5`, which the parser represents as `0 - 5` ([[expr-unary]]).
+
+@warning
+In `ashc` 1.0 a negative constant whose magnitude does not fit in 31 bits (for example `-5000000000` or `0 - 2147483648`) is computed incorrectly inside function bodies, because the subtraction is encoded with a 32-bit immediate. Write such constants in hexadecimal two's complement (`0xFFFFFFFED5FA0E00` is -5000000000), or subtract a variable (`int64 k = 5000000000; int64 n = 0 - k;`). Both forms work correctly.
+@end
+
+@warning
+In `ashc` 1.0 binary literals are recognized by the lexer, by compile-time directives and by the initializers of global variables, but a binary literal used inside a function body is not understood by the back end and the build fails with a parse error in the ASHIR stage. Use hexadecimal literals inside functions until this is fixed.
+@end
+
+Digit separators (`1_000`) and octal prefixes (`0o17`, C-style `017`) are not supported. A leading `0` does not make a number octal: `017` is seventeen.
+
+@subsection{lex-float} Floating-point literals
+@index floating point
+A literal with a decimal point and digits on both sides (`1.5`, `3.14159`) is a floating-point literal. Floating-point support in ASH 1.0 is limited; see [[type-float]] before using `float` and `double` values.
+
+@subsection{lex-char} Character literals
+@index character literal; escape sequence
+A character literal is a single character, or an escape sequence, enclosed in single quotes: `'A'`, `'0'`, `'\n'`, `'\x1B'`. Its value is the code of the character (`'A'` is 65). Character literals are integers and can be used wherever an integer is expected.
+
+@table widths=22,78 title="Escape sequences" label=tab-escapes
+Escape | Meaning
+`\n` `\r` `\t` | New line (10), carriage return (13), horizontal tab (9).
+`\0` | NUL (0).
+`\a` `\b` `\f` `\v` | Bell (7), backspace (8), form feed (12), vertical tab (11).
+`\\` `\'` `\"` | Backslash, single quote, double quote.
+`\x`*hh* | The byte with hexadecimal value *hh* (two digits).
+*\ooo* | The byte with octal value *ooo* (one to three octal digits after the backslash), as in `\033`.
+`\u`*hhhh*, `\U`*hhhhhhhh* | The Unicode code point *h...*, encoded in UTF-8 in ordinary strings and as one UCS-2 unit in wide strings.
+@end
+
+@example run title="Escape sequences in strings"
+@Entry
+pub func main(): int64 {
+    printf("tab[\t] hex[\x41] octal[\101] unicode[A] quote[\"] backslash[\\]\n");
+    printf("%d %d %d\n", '\n', '\x41', '\0');
+    return 0;
+}
+@end
+
+@subsection{lex-string} String literals
+@index string literal; multi-line string
+A string literal is a sequence of characters enclosed in double quotes. Escape sequences are decoded as in [[tab-escapes]]. A string literal cannot span lines; to write text over several lines use a *triple-quoted* string, which starts with `"""` and ends with the next `"""`. Inside a triple-quoted string, line breaks are part of the text and single `"` characters need no escape.
+
+**Adjacent string literals** are concatenated at compile time, as in C: `"Hello " "world"` is the same literal as `"Hello world"`. This works for ordinary and triple-quoted strings and is the way to write a long string over several lines of source.
+
+Every string literal is stored once in the read-only data of the program, followed by a terminating NUL byte, so it can be passed directly to C functions.
+
+@example run title="Concatenated and triple-quoted string literals"
+@Entry
+pub func main(): int64 {
+    string greeting = "Hello, " "concatenated " "world";
+    string poem = """Roses are red,
+"quotes" need no escape,
+and lines keep their breaks.""";
+    printf("%s\n%s\n", greeting, poem);
+    return 0;
+}
+@end
+
+
+@subsection{lex-wide} Wide string literals
+@index wide string; UCS-2; UEFI
+A string literal immediately preceded by the letter `L`, with no space in between, is a *wide string*: each character is stored as a 16-bit little-endian code unit and the string ends with a 16-bit zero. Wide strings are what UEFI firmware and many Windows APIs expect (`CHAR16*`, `WCHAR*`). Adjacent wide literals are concatenated. The value of a wide string literal is the address of its first code unit.
+
+@example run asm show=src,out title="A wide string is an array of 16-bit units"
+@Entry
+pub func main(): int64 {
+    uint16* w = L"ASH";
+    printf("%d %d %d %d\n", w[0], w[1], w[2], w[3]);
+    return 0;
+}
+@end
+
+@section{lex-ops} Operators and Punctuation
+@index operators
+The following character sequences are operators or punctuators. The lexer always takes the longest sequence that forms a token, so `a***b` is `a *** b` and `x<<=2` is `x <<= 2`.
+
+@table widths=34,66 title="Operators and punctuators" label=tab-operators
+Tokens | Use
+`+` `-` `*` `/` `%` | Arithmetic ([[expr-arith]]).
+`**` `***` | Power and repeated squaring ([[expr-pow]]).
+`<<` `>>` | Shifts.
+`&` `|` `^` `~` | Bitwise operators; `&` is also the address-of operator.
+`==` `!=` `<` `<=` `>` `>=` | Comparisons.
+`&&` `||` `!` | Logical operators (in conditions).
+`=` | Assignment.
+`+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=` | Compound assignment ([[lex-compound]]).
+`++` `--` | Increment and decrement.
+`#` | Length of an array or string ([[arr-length]]).
+`.` `->` | Member access, method call, crack call.
+`...` | Variadic parameter list.
+`@` | Annotation.
+`( )` `[ ]` `{ }` `,` `;` `:` | Grouping, indexing, blocks, separators, return type.
+@end
+
+@section{lex-token-passes} Token-Level Transformations
+A few constructs are rewritten by the lexer before the parser sees them. They are described here because they explain some of the rules of later chapters.
+
+@subsection{lex-ctypes} Multi-word C type names
+@index unsigned; long long
+Sequences of the C type words `unsigned`, `signed`, `long`, `short`, `int` and `char` are folded into a single ASH type name:
+
+@table widths=42,58 title="Folding of C type names" label=tab-ctype-fold
+C spelling | ASH type
+`unsigned char` / `signed char` | `uint8` / `int8`
+`short`, `short int`, `signed short` | `int16`
+`unsigned short`, `unsigned short int` | `uint16`
+`int`, `signed`, `signed int` | `int32`
+`unsigned`, `unsigned int` | `uint32`
+`long`, `long int`, `long long`, `long long int` | `int64`
+`unsigned long`, `unsigned long long` | `uint64`
+@end
+
+The sequence must start with `unsigned`, `signed`, `long` or `short` to be folded; a lone `int` or `char` is already an ASH type name.
+
+@subsection{lex-compound} Compound assignment
+@index compound assignment
+`x op= e` is rewritten into `x = x op (e)` for every operator `+ - * / % << >> & | ^`. The right-hand side is parenthesized, so `x *= a + b` multiplies `x` by the sum. Member increments `p.n++` and `q->n--` are rewritten into `p.n = p.n + 1` and `q->n = q->n - 1`.
+
+@example run ir title="Compound assignment is a rewrite"
+@Entry
+pub func main(): int64 {
+    int64 x = 10;
+    x *= 2 + 1;        // x = x * (2 + 1)  -> 30
+    x -= 4;            // 26
+    x <<= 1;           // 52
+    return x;
+}
+@end
+
+@subsection The ashley intrinsics
+The identifier `ashley` followed by a dot introduces an intrinsic of the compiler: `ashley.InjectByte(...)`, `ashley.InjectBytes(...)`, `ashley.InjectWord(...)`, `ashley.InjectDword(...)` and `ashley.InjectQword(...)`. They are the long names of `emit`, `emit16`, `emit32` and `emit64` ([[asm-emit]]).

@@ -1,0 +1,224 @@
+@chapter{ch-codegen} Code Generation for x86
+@index code generation; machine code
+This chapter explains how the back end turns ASHIR into x86 machine code. It describes the model used by the 64-bit generator (register usage, frames, calls, memory access), the simpler model of the 32-bit and 16-bit generator, and shows the instruction sequences produced for each kind of operation. The goal is to let you read any disassembly of an ASH program and relate every instruction to a line of source.
+
+@section{cg-philosophy} A Direct Translator
+The code generators of `ashc` 1.0 translate each ASHIR operation independently into a short, fixed instruction pattern. They do not reorder operations, do not eliminate redundant moves and do not keep values in registers across operations beyond the variables' home locations. The resulting code is predictable and easy to map back to the source, at the price of extra `mov` instructions compared with an optimizing C compiler. When a routine must be fast, write it in an `asm` block or a `@naked` function ([[ch-asm]]).
+
+A typical operation is translated in three steps: load the current value of the destination into `rax`, combine it with the argument (loaded into `rcx` if it is not a constant), and store `rax` back into the destination's home:
+
+@example asm=step show=src,asm title="One ASHIR operation, one short pattern" label=ex-cg-pattern
+func step(int64 a, int64 b): int64 {
+    int64 x = a;
+    x = x + b;          // %x add[b]
+    x = x * 3;          // %x imul[3]
+    return x;
+}
+
+@Entry
+pub func main(): int64 {
+    return step(4, 10);
+}
+@end
+
+@section{cg-regs} Register Usage on x86-64
+@table widths=26,74 title="Registers used by the 64-bit code generator" label=tab-cg-regs
+Register | Use
+`rax` | Accumulator of every operation; return value.
+`rcx`, `rdx` | Second operand; `rdx` also holds the high half for `div` / `idiv` and the remainder.
+`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9` | Arguments of calls (System V); copied to their home locations at function entry.
+`r8`–`r11` | Homes of locals and temporaries in leaf functions (no calls).
+`r12`–`r15` | Homes of locals and temporaries in functions that make calls or contain assembly; saved in the prologue and restored before returning.
+`rbp` | Frame pointer, when the function has a frame.
+`rsp` | Stack pointer; aligned to 16 bytes at each call.
+`rbx` | Not used.
+`xmm0`–`xmm7`, `xmm8`–`xmm15` | Reserved for floating-point arguments and variables.
+@end
+
+Values that do not fit in the available registers get 8-byte slots in the frame, addressed as `[rbp-`*n*`]` ([[ex-spill]]).
+
+@section{cg-frames} Prologue and Epilogue
+@table widths=30,70 title="Frame shapes" label=tab-cg-frames
+Function | Code
+Leaf, no stack use (`@beautycode(true)`) | No prologue; the body ends with `ret`.
+Leaf with stack use | `push rbp; mov rbp, rsp; sub rsp, N` ... `leave; ret`
+Function that calls or uses `asm` | `push rbp; mov rbp, rsp; sub rsp, N`, then `mov [rbp-8], r12` ... for each of `r12`–`r15`; before each `ret` the registers are reloaded and `mov rsp, rbp; pop rbp` (or `leave`) restores the frame.
+`_start` entry | As above, plus `and rsp, -16` right after `mov rbp, rsp`, because the process entry is not reached by a `call`.
+`@naked` | Nothing.
+`-e` / `@beautycode(false)` | Every function has the full frame.
+@end
+
+@example asm=leaf,caller show=src,asm title="Leaf function versus calling function" label=ex-cg-frames
+func leaf(int64 a): int64 {
+    return a + 1;
+}
+
+func caller(int64 a): int64 {
+    return leaf(a) + leaf(a + 1);
+}
+
+@Entry
+pub func main(): int64 {
+    return caller(5);
+}
+@end
+
+@section{cg-const} Constants and Moves
+Small constants are loaded with `mov eax, imm32` (which also clears the upper half of `rax`), negative or large constants with `mov rax, imm64`. Arithmetic with a constant uses the immediate forms `add rax, imm8/imm32`, `imul rax, rax, imm`. Moves between homes go through `rax`: `mov rax, r12` then `mov r13, rax`.
+
+@section{cg-arith} Arithmetic, Division and Shifts
+@example asm=ops show=src,asm asmlines=80 title="Instruction patterns for arithmetic" label=ex-cg-arith
+func ops(int64 a, int64 b): int64 {
+    int64 s = a + b;
+    int64 d = a - b;
+    int64 m = a * b;
+    int64 q = a / b;
+    int64 r = a % b;
+    int64 l = a << 3;
+    int64 h = a >> 2;
+    int64 x = (a & b) | (a ^ b);
+    return s + d + m + q + r + l + h + x;
+}
+
+@Entry
+pub func main(): int64 {
+    return ops(100, 7);
+}
+@end
+
+Division sign-extends `rax` into `rdx` with `cqo` and uses `idiv`; for unsigned operands it clears `edx` and uses `div`. The quotient is taken from `rax` and the remainder from `rdx`.
+
+@section{cg-branch} Conditions and Loops
+A `brf` / `brt` operation becomes `cmp` between the two operands followed by a conditional jump. The jump tests the *opposite* condition for `brf` (jump to the false label) and the condition itself for `brt`.
+
+@table widths=14,22,22,42 title="Conditional jumps chosen for comparisons" label=tab-cg-jcc
+Code | Signed | Unsigned | Jump taken by brf (condition false)
+`eq` | `je` | `je` | `jne`
+`ne` | `jne` | `jne` | `je`
+`lt` | `jl` | `jb` | `jge` / `jae`
+`le` | `jle` | `jbe` | `jg` / `ja`
+`gt` | `jg` | `ja` | `jle` / `jbe`
+`ge` | `jge` | `jae` | `jl` / `jb`
+@end
+
+@example asm=count show=src,asm title="A for loop in machine code" label=ex-cg-loop
+func count(int64 n): int64 {
+    int64 total = 0;
+    for (int64 i = 0; i < n; i++) {
+        total = total + i;
+    }
+    return total;
+}
+
+@Entry
+pub func main(): int64 {
+    return count(10);
+}
+@end
+
+The loop has the shape of its ASHIR: the condition at the top (`cmp` and `jge` to the exit), the body, the increment, and a `jmp` back to the top.
+
+@section{cg-calls} Calls
+For a call the generator evaluates the arguments into their temporaries, pushes the arguments beyond the sixth (last first), loads the first six into `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`, clears `eax` (the number of vector registers, required by variadic C functions), executes `call`, removes the pushed arguments with `add rsp, 8*n`, and moves `rax` into the destination. Calls to functions in the same object use a `call rel32` resolved by the object writer; calls to external functions use a `R_X86_64_PLT32` relocation that the linker resolves to the function or to its PLT entry.
+
+@example asm=main show=src,asm title="Calling a C function" label=ex-cg-call
+@Entry
+pub func main(): int64 {
+    printf("%d %d %d\n", 1, 2, 3);
+    return 0;
+}
+@end
+
+The `call` instruction shows `e8 00 00 00 00`: the four zero bytes are the relocation target, filled in by the linker.
+
+@section{cg-memory} Memory Access
+@table widths=30,70 title="Addressing used for each kind of data" label=tab-cg-addressing
+Data | Addressing
+Locals and parameters | Registers, or `[rbp-n]` slots.
+Arguments 7 and above | `[rbp+16]`, `[rbp+24]` ...
+Globals, strings, functions | RIP-relative: `lea reg, [rip+disp32]` to obtain the address, then `mov` through it.
+Array and structure elements | The address is computed into `rax` (base + index * size or base + offset), then `mov` with the width of the element: `BYTE`, `WORD`, `DWORD` or `QWORD PTR [rax]`.
+@end
+
+@example asm=bump show=src,asm title="RIP-relative access to a global variable" label=ex-cg-global
+general static int64 counter = 5
+
+func bump(): int64 {
+    counter = counter + 1;
+    return counter;
+}
+
+@Entry
+pub func main(): int64 {
+    return bump();
+}
+@end
+
+@example asm=get,raw show=src,asm asmlines=90 title="Indexed access with bounds checking" label=ex-cg-index
+func get(int64 i): int64 {
+    int64[] data = {10, 20, 30};
+    return data[i];               // bounds-checked: data is an array
+}
+
+func raw(int64* p, int64 i): int64 {
+    return p[i];                  // not checked: p is a raw pointer
+}
+
+@Entry
+pub func main(): int64 {
+    int64[] v = {1, 2};
+    return get(2) + raw(v, 1);
+}
+@end
+
+@section{cg-32} The 32-bit Generator
+@index Backend32; i386 code
+`Backend32` generates code for `@bits(32)` (and, with 16-bit encodings, for `@bits(16)`). Its model is simpler than the 64-bit one:
+
+- every function has a frame: `push ebp; mov ebp, esp; sub esp, N`;
+- every local and temporary lives in a slot `[ebp-n]`; parameters are read from `[ebp+8]`, `[ebp+12]` ...;
+- `eax` is the accumulator and `ecx` the second operand; results are returned in `eax`;
+- calls push the arguments from right to left and remove them with `add esp, 4*n` after the call;
+- a function ends with `mov esp, ebp; pop ebp; ret`.
+
+@example bits=32 asm=add show=src,asm title="The same function compiled for i386" label=ex-cg-32
+@bits(32)
+
+func add(int32 a, int32 b): int32 {
+    int32 c = a + b;
+    return c;
+}
+
+@Entry
+pub func main(): int32 {
+    return add(40, 2);
+}
+@end
+
+@section{cg-16} The 16-bit Generator
+In 16-bit mode the same model is applied with 16-bit registers and operand sizes: `bp`-based frames, `ax` as accumulator, arguments pushed as words, results in `ax`, and near `call` / `ret`. Addresses are 16-bit offsets within the segment in which the image is loaded; the generated code does not change segment registers, so the image must be loaded with `CS`, `DS`, `ES` and `SS` set appropriately (as DOS does for `.COM` programs and as a boot sector must arrange itself).
+
+@example bits=16 org=0x100 run asm asmlimit=40 title="A 16-bit function and its caller" label=ex-cg-16
+@bits(16)
+@originoffs(0x100)
+
+func add(int16 a, int16 b): int16 {
+    return a + b;
+}
+
+@Entry
+pub func _start(): int16 {
+    return add(40, 2);
+}
+@end
+
+@section{cg-reading} Reading Generated Code
+When you read a disassembly of an ASH function, the following landmarks help:
+
+1. The prologue tells you the frame size and which callee-saved registers the function uses.
+2. Each source statement starts by loading values into `rax` (and `rcx`) and ends by storing `rax` into a register in `r8`–`r15` or a frame slot.
+3. A `cmp` followed by a conditional jump is a condition; a `jmp` backwards is the end of a loop body.
+4. A `call` preceded by loads into `rdi`, `rsi` ... is a function call; `call` to `__ash_bounds` is a bounds check.
+5. The epilogue restores `r12`–`r15` and returns.
+
+The `examples/` directory and [[app-examples]] contain programs for every construct; compiling them with `--elf` and running `objdump -d -M intel` on the result is the fastest way to learn the patterns.

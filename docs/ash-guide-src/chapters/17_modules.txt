@@ -1,0 +1,205 @@
+@chapter{ch-modules} Modules, Imports and Override Rights
+@index import; modules
+A program can be split into several ASH files. One file, the *main file*, is given to the compiler; the others are brought in with `import`. All files are merged into a single program and compiled into one object file. This chapter describes the import forms, how files and libraries are found, what an import brings into a program, and the *override rights* that decide which definition wins when several files define the same name.
+
+@section{mod-import} The import Statement
+@code text nocheck
+import <name>;            // a system library from nlib
+import "path/file.ash";   // a file of your project
+import "name";            // name.ash in the project
+@end
+
+Imports are written at top level, usually at the beginning of the file. An import may itself contain imports; each file is merged only once, however many times it is imported. Import statements that appear inside comments (for example in usage examples at the top of a library) are ignored.
+
+@section{mod-search} Where Files Are Found
+@subsection System libraries: import <name>
+For `import <name>;` the compiler looks for `name.ash` in the following places and uses the first one found:
+
+1. a directory named `nlib` next to the main source file;
+2. a directory named `nlib` in the parent directory of the main source file;
+3. `nlib` and `../nlib` relative to the current directory;
+4. the copy of `nlib` embedded in the compiler itself.
+
+A library on disk therefore always takes precedence over the embedded one, which lets a project extend or patch a system library without rebuilding the compiler. `ashc --list-nlib` lists the embedded libraries; [[ch-nlib]] documents them.
+
+@subsection Project files: import "file.ash"
+For `import "file.ash";` the path is tried relative to the directory of the main source file, then relative to its parent directory, then relative to the current directory. When the import appears inside an imported file, the directory of *that* file is tried first, as with `#include "..."` in C. `import "name";` without extension looks for `name.ash`.
+
+@section{mod-what} What an Import Brings In
+Everything declared at top level in the imported file becomes part of the program:
+
+@table widths=30,70 title="Effect of importing a file" label=tab-import-effect
+Item | Effect
+Functions and classes | Callable from the importing program (except `priv` ones, [[mod-visibility]]).
+Global variables | Accessible by name; `general` globals stay public symbols.
+`extern` declarations | Available to the program.
+`define` and `macro` | Visible in the importing file.
+`typedef` and structures | Visible in the importing file.
+User annotations | Usable in the importing file.
+`@Entry` | Ignored unless it is the program's only entry point; the main file's entry wins.
+@end
+
+@subsection{mod-shake} Tree shaking
+@index tree shaking
+After merging, the compiler removes every function that came from an imported file and is not reached, directly or indirectly, from a function of the main file. Functions of the main file are always kept because C code may call them. Importing a large library therefore costs only the functions you use, and an imported function that refers to a C symbol you never use does not create an unresolved reference.
+
+@code ash file=geometry.ash
+// geometry.ash - a small library
+pub func square_area(int64 side): int64 {
+    return side * side;
+}
+
+pub func rect_area(int64 w, int64 h): int64 {
+    return w * h;
+}
+
+priv func helper(): int64 {
+    return 1;
+}
+
+define UNIT 10;
+@end
+
+@example run name=main.ash ir show=src,out,ir title="Importing a project file" label=ex-import
+import "geometry.ash";
+
+@Entry
+pub func main(): int64 {
+    printf("%d\n", square_area(UNIT));
+    return 0;
+}
+@end
+
+The ASHIR contains `main` and `square_area` only: `rect_area` and `helper` were removed because nothing in the main file uses them.
+
+@section{mod-override} Override Rights
+@index override; @ovr; rights
+When the merged program contains several functions (or classes, or annotations) with the same name, ASH does not report a duplicate immediately. Each definition has an **override right**, a signed integer, and the definition with the **highest right** is kept. The idea is similar to the `z-index` of CSS.
+
+@table widths=44,56 title="Default and explicit override rights" label=tab-rights
+Definition | Right
+A function or class without annotation | 0
+Functions and classes of `nlib` libraries | -1
+`@ovr` / `@override` (no value) | 1
+`@ovr[N]`, `@ovr(N)`, `@override[N]`, `@override(N)` | N (any signed 64-bit value)
+`redefine` with a body | 1
+`redefine global` with a body | 100
+`name.override = N;` at top level | N, for the function `name`
+`Class.override = N;` / `Class.method.override = N;` | N for the class, or for one method (the method's value wins over the class's)
+`@Annotation.override = N;` | N for a user-defined annotation
+@end
+
+Ties are resolved as follows:
+
+- between the main file and an imported file: the **main file wins**;
+- between two imported files: **error** — the compiler cannot know which one you meant;
+- the function marked `@Entry` is never replaced.
+
+The predefined constants `true` and `false` also have right -1, so a program may define its own.
+
+@subsection Your function beats the library
+Because library functions have right -1 and your functions right 0, a function you write with the name of a library function replaces it, and every caller (including other library functions) uses yours.
+
+@example run title="A program function replaces the nlib version" label=ex-ovr-nlib
+import <delay>;
+
+pub func delay(int64 ms): void {
+    printf("my own delay(%d) instead of sleeping\n", ms);
+}
+
+@Entry
+pub func main(): int64 {
+    delay(7);
+    return 0;
+}
+@end
+
+@subsection Choosing between imported files
+@code ash file=lib_a.ash
+pub func greet(): void {
+    printf("greet from A\n");
+}
+@end
+
+@code ash file=lib_b.ash
+@ovr[5]
+pub func greet(): void {
+    printf("greet from B (right 5)\n");
+}
+@end
+
+@code ash file=lib_c.ash
+pub func greet(): void {
+    printf("greet from C (right 0)\n");
+}
+@end
+
+@example run name=main_ab.ash title="The higher right wins" label=ex-ovr-ab
+import "lib_a.ash";
+import "lib_b.ash";
+
+@Entry
+pub func main(): int64 {
+    greet();
+    return 0;
+}
+@end
+
+@example fail name=main_ac.ash title="Two imports with the same right are an error" translate="error: 'greet' is defined in lib_a.ash and in lib_c.ash with the same rights (override=0): the compiler does not know which one to use. Use @ovr[N] or greet.override = N;\n1 error generated."
+import "lib_a.ash";
+import "lib_c.ash";
+
+@Entry
+pub func main(): int64 {
+    greet();
+    return 0;
+}
+@end
+
+@subsection Raising a right from the main file
+An assignment `name.override = N;` at top level gives the function `name` the right *N*. Written in the main file, it lets the program select or replace a definition without editing the libraries:
+
+@example run name=main_raise.ash title="Raising the right of the program's own function" label=ex-ovr-raise
+import "lib_b.ash";
+
+pub func greet(): void {
+    printf("greet from the main file\n");
+}
+greet.override = 1000;
+
+@Entry
+pub func main(): int64 {
+    greet();
+    return 0;
+}
+@end
+
+@tip
+Use override rights deliberately: they are a powerful way to provide platform-specific implementations (a library defines a portable function with right 0, a platform file overrides it with `@ovr[10]`) and test doubles (a test file overrides a function that talks to hardware). Keep the rights in one place so that readers can see which definition wins.
+@end
+
+@section{mod-c} Modules and C Objects
+Each `ashc` invocation produces one object file from the main file and everything it imports. To build a program from several independent ASH modules, compile each module separately and link the objects together, declaring the functions of one module as `extern` in the other, exactly as with C. ASH objects and C objects can be freely mixed in one link.
+
+@code ash file=mathlib.ash
+pub func cube(int64 x): int64 {
+    return x * x * x;
+}
+@end
+
+@code ash file=app.ash
+extern int64 cube(int64 x);
+
+@Entry
+pub func main(): int64 {
+    printf("cube(7)=%d\n", cube(7));
+    return 0;
+}
+@end
+
+@session
+$ ashc mathlib.ash --elf -s
+$ ashc app.ash --elf -s
+$ gcc out/app.o out/mathlib.o -o app
+$ ./app
+@end
