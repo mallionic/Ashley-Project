@@ -1,0 +1,19 @@
+ashc_patched.jar  -> java -jar ashc_patched.jar x.ash --elf -o x.o
+Arreglos (ver parche.diff y src/):
+1. VarsFunctions: ya no da "Tipo incorrecto para '__tmpN'" al pasar enteros de otro ancho a una funcion.
+2. VarsFunctions.Call: acepta guardar un retorno qword en una variable int32 (ajusta el ancho).
+3. BackendStatements.generateCall: ya no da "'b' already exists as DWORD but QWORD is needed"
+   y no redeclara (no pone a 0) el temporal que es el argumento.
+4. Generator: bug de __ash_shr (>> con cantidad variable): brf -> brt. Antes restaba 1 de mas.
+Probado: tu bytebeat original compila y da los mismos resultados que Python (200000 muestras).
+LIMITE: --win (COFF) aun no soporta llamadas extern (JavaWinOBJ); los ejemplos 0x de Windows
+compilan con --elf pero NO se pueden generar como objeto Windows con este compilador.
+
+5. NUEVO: --win (COFF AMD64) ya soporta llamadas extern (WinAPI/NT):
+   ABI Windows x64: RCX,RDX,R8,R9 / XMM0-3 por posicion, 32 bytes de shadow space,
+   resto a la pila, call rel32 con IMAGE_REL_AMD64_REL32 (se resuelve con kernel32.lib etc.).
+   java -jar ashc_patched.jar 01_hello_console.ash --win -o 01.obj     (ya hay .obj en obj/)
+   Enlazar: link /subsystem:console /entry:main 01.obj kernel32.lib user32.lib ntdll.lib winmm.lib
+        o:  x86_64-w64-mingw32-gcc 01.obj -o 01.exe -nostartfiles -Wl,-e,main -lkernel32 -luser32 -lntdll -lwinmm
+   Limites (sin probar en Windows/Wine, no hay wine aqui): floats variadicos no se copian a registros enteros;
+   las funciones ASH internas usan RDI/RSI sin guardarlos (ok si main termina con ExitProcess).

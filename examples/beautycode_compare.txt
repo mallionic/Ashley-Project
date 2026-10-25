@@ -1,0 +1,27 @@
+@beautycode ACTIVADO vs DESACTIVADO  (mismo programa: llenar un int64[8] y sumarlo)
+====================================================================================
+
+                              @beautycode(true)     @beautycode(false)
+  .text del objeto ELF        2286 bytes            2236 bytes   (-50)
+  instrucciones de suma()     106                   94           (-12)
+  llamadas a __ash_bounds     1 por cada v[i]       ninguna
+  indice fuera de rango       aborta (SIGABRT 134)  no se detecta (memoria corrupta)
+
+Que genera cada modo en el 1er bucle  v[i] = i * 3   (ASHIR):
+
+  true :   %__tmp1 ...                       false:   %__tmp1 ...
+           %__tmp2 call[__ash_bounds, v, __tmp1]       %__tmp2 mov[i]
+           %__tmp3 mov[i]                              %__tmp2 imul[3]
+           %__tmp3 imul[3]                             store[__tmp1, __tmp2]
+           store[__tmp1, __tmp3]
+
+Y en la lectura total = total + v[j]:
+
+  true :   %__tmp6 call[__ash_bounds, v, __tmp5]      (comprueba j < 8 antes de leer)
+  false:   (sin llamada: calcula la direccion y lee)
+
+Aparte de eso (en ambos modos) el prologo/epilogo es compacto: cada funcion guarda
+solo los r12-r15 que usa y sale con 'leave'. Compila con:
+
+  ashc 26_beautycode_on.ash  --elf     ->  ./out/26_beautycode_on   (aborta con n=9)
+  ashc 27_beautycode_off.ash --elf     ->  ./out/27_beautycode_off

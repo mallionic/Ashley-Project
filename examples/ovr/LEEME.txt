@@ -1,0 +1,15 @@
+Derechos de ejecucion (override / ovr) - como el z-index de CSS: gana el mayor.
+
+  sin anotacion ........ 0          @ovr / @override ...... 1 (sin valor)
+  @ovr[N] / @override[N] valor N (int64 con signo)          funciones y clases de nlib ... -1
+  nombre.override = N;  clase.metodo.override = N;  clase.override = N;   @anotacion.override = N;
+
+Ejemplos (ejecutar desde esta carpeta):
+  ashc main_ovr.ash --elf                  B (@ovr[5]) le gana a A (0); la clase de B (@override = 1) gana
+  ashc main_empate_error.ash --elf         A y C empatan (0) -> ERROR: el compilador no sabe cual usar
+  ashc main_override_asignado.ash --elf    D sube sus derechos con  saludo.override = 50;
+  ashc main_propio_vs_nlib.ash --elf       tu funcion (0) le gana a la de nlib (-1)
+  ashc main_subir_propio.ash --elf         saludo.override = 1000 en el principal supera a @ovr[5]
+
+Empate entre el archivo principal y un import: gana el principal. Empate entre dos imports: error.
+@Entry nunca se reemplaza.

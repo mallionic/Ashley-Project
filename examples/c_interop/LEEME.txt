@@ -1,0 +1,11 @@
+ASH <-> C: funciones y variables compartidas.
+
+  ashc lib.ash --elf -o lib.o
+  gcc main.c lib.o -no-pie -o demo        (gcc avisa del segmento RWX: es normal, ver abajo)
+  ./demo
+
+lib.ash exporta con 'redefine global' una funcion que C llama, y las variables 'general'
+(contador, VERSION) que C lee y escribe. Un metodo 'priv' de una clase NO se puede exponer: da error.
+
+Aviso RWX: si el programa tiene variables globales escribibles, el codigo y los datos comparten una
+seccion W+X (el enlazador avisa). Para silenciarlo: gcc ... -Wl,--no-warn-rwx-segments
